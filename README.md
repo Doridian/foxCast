@@ -9,6 +9,7 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 - Can connect to AppleTV devices
 - Can stream video and audio given a local file
 - Runs on Linux
+- Impelemented in Go or Rust
 
 ## Sources
 
