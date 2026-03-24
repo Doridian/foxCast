@@ -12,9 +12,4 @@ const (
 	TLVState         = uint8(0x06) // Message state (M1–M6)
 	TLVError         = uint8(0x07) // Error code
 	TLVSignature     = uint8(0x0A) // Ed25519 signature
-	TLVFlags         = uint8(0x13) // Pairing flags (Apple internal)
-
-	// FlagsTransientPairing requests a transient session (no stored credentials).
-	// Used in pair-setup M1 when X-Apple-HKP: 4.  PIN is always "3939".
-	FlagsTransientPairing = uint8(0x10)
 )

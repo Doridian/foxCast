@@ -60,15 +60,6 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 		}
 	}
 
-	// Transient pairing: no credentials stored; session keys come from SRP.
-	if dev.SupportsTransientPairing() {
-		if err := hap.PairSetupTransient(sess, dev.Addr()); err != nil {
-			sess.Close()
-			return nil, fmt.Errorf("airplay: transient pair-setup: %w", err)
-		}
-		return &Client{dev: dev, sess: sess}, nil
-	}
-
 	// Standard HAP pairing.
 	creds, err := hap.LoadCredentials(dev.DeviceID)
 	if err != nil {
@@ -113,8 +104,8 @@ func fetchInfoUnencrypted(sess *hap.Session, addr string) (*infoResponse, error)
 
 // infoResponse holds just the fields from /info we need before pairing.
 type infoResponse struct {
-	DeviceID string               `plist:"deviceID"`
-	Features mdns.FeatureFlags    `plist:"features"`
+	DeviceID string            `plist:"deviceID"`
+	Features mdns.FeatureFlags `plist:"features"`
 }
 
 // Close closes the underlying connection.
@@ -180,10 +171,10 @@ func (c *Client) Scrub(position float64) error {
 
 // PlaybackInfoResponse holds the parsed response body of GET /playback-info.
 type PlaybackInfoResponse struct {
-	Duration   float64 `plist:"duration"`
-	Position   float64 `plist:"position"`
-	Rate       float64 `plist:"rate"`
-	ReadyToPlay bool   `plist:"readyToPlay"`
+	Duration    float64 `plist:"duration"`
+	Position    float64 `plist:"position"`
+	Rate        float64 `plist:"rate"`
+	ReadyToPlay bool    `plist:"readyToPlay"`
 }
 
 // PlaybackInfo queries current playback state from the receiver.

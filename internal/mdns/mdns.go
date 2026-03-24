@@ -26,7 +26,6 @@ const (
 	FeatureBufferedAudio      FeatureFlags = 1 << 40
 	FeaturePTP                FeatureFlags = 1 << 41
 	FeatureHomeKitPairing     FeatureFlags = 1 << 46
-	FeatureTransientPairing   FeatureFlags = 1 << 48
 	FeatureAirPlayVideoV2     FeatureFlags = 1 << 49
 )
 
@@ -57,11 +56,6 @@ func (d *Device) NeedsHAPPairing() bool {
 	return d.Features&FeatureHomeKitPairing != 0
 }
 
-// SupportsTransientPairing reports whether the device accepts transient pairing
-// (fixed PIN "3939", no stored credentials required).
-func (d *Device) SupportsTransientPairing() bool {
-	return d.Features&FeatureTransientPairing != 0
-}
 
 // Discover browses for _airplay._tcp receivers until ctx is cancelled.
 // Found devices are sent to the returned channel; the channel is closed when
