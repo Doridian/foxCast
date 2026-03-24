@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -99,6 +100,9 @@ func cmdPair(addr string) error {
 	fmt.Printf("Connecting to %s ...\n", addr)
 	fmt.Print("Enter PIN shown on receiver: ")
 	pin := readLine()
+	if pin == "" {
+		return fmt.Errorf("no PIN entered")
+	}
 
 	client, err := airplay.Connect(dev, pin)
 	if err != nil {
@@ -236,6 +240,6 @@ func portFromAddr(addr string) int {
 // readLine reads a single line from stdin.
 func readLine() string {
 	var line string
-	fmt.Scan(&line)
-	return line
+	fmt.Fscanln(os.Stdin, &line)
+	return strings.TrimSpace(line)
 }
