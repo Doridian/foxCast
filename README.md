@@ -6,10 +6,20 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 
 ## MVP
 
-- Can connect to AppleTV devices
-- Can stream video and audio given a local file
+The minimal end-to-end proof: instruct an Apple TV to play a URL. The Apple TV fetches and decodes the media itself — no RTP, no encoding, no timing sync required on the sender side.
+
+- Discover Apple TV devices on the local network via mDNS
+- Pair with an Apple TV (HAP pair-setup, persist credentials; pair-verify on each connection)
+- Instruct an Apple TV to play a given URL (`POST /play`)
+- Serve a local file over HTTP so it can be played from disk
 - Runs on Linux
-- Impelemented in Go or Rust
+- Implemented in Go or Rust
+
+## Post-MVP
+
+- Playback controls for URL playback: play/pause (`/rate`), seek (`/scrub`), stop
+- Event handling: read playback state notifications from the reverse (PTTH) channel
+- Audio-only streaming via RAOP (required for non-Apple-TV AirPlay receivers, e.g. speakers)
 
 ## Documentation
 
@@ -50,7 +60,7 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 
 ## Later goals
 
-- Can connect to any type of AirPlay receiver
-- Controls for streamed video files
-- Ability to take in data via xdg-desktop-portal for app and window streaming
-- Runs on Linux and Windows
+- Screen mirroring (H.264/H.265 + AAC-ELD over TCP/UDP; requires real-time encoding)
+- xdg-desktop-portal integration for app and window capture
+- Runs on Windows as well
+- Support for any AirPlay receiver type (not just Apple TV)
