@@ -30,20 +30,32 @@ testutil/
 
 ## Test Fixtures
 
-### pyatv Fake Device (Integration Tests)
+### pyatv Fake Receiver (Integration Tests)
 
-`postlund/pyatv` ships a purpose-built fake AirPlay server at `tests/fake_device/` that implements:
-- `/pair-setup` and `/pair-verify` (HAP pairing with hardcoded test credentials)
-- `/fp-setup` (FairPlay stub)
-- `/play`, `/rate`, `/scrub`, `/stop`, `/playback-info`
-- `/reverse` (PTTH event channel)
-- Failure injection via `FakeAirPlayUseCases`
+`testfixtures/fake_receiver.py` is a thin fake AirPlay receiver built on top of pyatv's installed `AirPlayServerAuth` class. It handles the full auth flow out of the box (HAP pair-setup/pair-verify, FairPlay fp-setup, HAP session encryption) and adds the MVP control endpoints:
 
-Integration tests start it as a subprocess, wait for it to advertise via mDNS (or connect directly by known port), run the sender against it, and assert on its stdout output or HTTP state.
+- `GET /info`
+- `POST /play`, `GET /playback-info`, `POST /rate`, `POST /scrub`, `POST /stop`
+- `POST /reverse` (PTTH acknowledgement)
+
+It emits newline-delimited JSON events to stdout:
+```json
+{"type":"ready","port":17777,"pk":"e734ea6c..."}
+{"type":"play","url":"http://...","position":0.0}
+{"type":"rate","value":0.0}
+```
+
+Integration tests (`//go:build integration`) start it as a subprocess via `uv run`, read the `ready` event to get the port and public key, run the sender against it, and assert on subsequent events.
 
 ```
-TestMain → start pyatv fake_device subprocess → run test → kill subprocess
+TestMain → exec("uv run python fake_receiver.py --port 0")
+         → read {"type":"ready","port":N,"pk":"..."} from stdout
+         → run test against 127.0.0.1:N
+         → assert on JSON event stream
+         → kill subprocess
 ```
+
+Python dependencies are managed by `uv` in `testfixtures/` (isolated venv, reproducible). Run `cd testfixtures && uv sync` to install.
 
 ### Go Mock Receiver (Unit/Component Tests)
 
