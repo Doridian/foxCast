@@ -12,7 +12,7 @@ import (
 // Credentials holds the long-term keys for a paired receiver.
 // Stored as JSON at ~/.config/foxcast/credentials/<deviceID>.json.
 type Credentials struct {
-	DeviceID        string `json:"deviceID"`       // receiver MAC address (from mDNS)
+	DeviceID        string `json:"deviceID"`        // receiver MAC address (from mDNS)
 	DevicePairingID string `json:"devicePairingID"` // receiver pairing identifier from M6
 	DeviceLTPK      []byte `json:"deviceLTPK"`      // receiver Ed25519 public key (32 bytes)
 	ClientID        string `json:"clientID"`        // our UUID pairing identifier

@@ -32,7 +32,7 @@ const (
 // Device holds the parsed advertisement for a discovered AirPlay receiver.
 type Device struct {
 	Name      string
-	Host      string       // IP address or hostname
+	Host      string // IP address or hostname
 	Port      int
 	DeviceID  string       // MAC address from TXT "deviceid"
 	PublicKey []byte       // Ed25519 LTPK from TXT "pk" (32 bytes)
@@ -55,7 +55,6 @@ func (d *Device) NeedsFairPlay() bool {
 func (d *Device) NeedsHAPPairing() bool {
 	return d.Features&FeatureHomeKitPairing != 0
 }
-
 
 // Discover browses for _airplay._tcp receivers until ctx is cancelled.
 // Found devices are sent to the returned channel; the channel is closed when
