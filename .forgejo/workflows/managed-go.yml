@@ -1,0 +1,27 @@
+name: Go check
+
+on:
+  workflow_call:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  check-go:
+    runs-on: ${{ vars.MANAGED_RUNNER_TAG || 'ubuntu-24.04' }}
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v6
+      - uses: https://data.forgejo.org/actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: false
+      - name: golangci-lint
+        uses: https://github.com/golangci/golangci-lint-action@v9
+        with:
+          version: latest
+      - name: Go build
+        run: go build ./...
+      - name: Go test
+        run: go test ./...
