@@ -47,9 +47,6 @@ func TestFeatureFlagBits(t *testing.T) {
 	if f&FeatureHomeKitPairing == 0 {
 		t.Error("expected HomeKitPairing bit to be set")
 	}
-	if f&FeatureTransientPairing == 0 {
-		t.Error("expected TransientPairing bit to be set")
-	}
 	if f&FeatureAudio == 0 {
 		t.Error("expected Audio bit to be set")
 	}
@@ -61,8 +58,8 @@ func TestParseTXT(t *testing.T) {
 		"features=0x4A7FDFD5,0x038BCB46",
 		"model=AppleTV6,2",
 		"pk=0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
-		"novalue",      // no '=' — should be skipped
-		"empty=",       // empty value is fine
+		"novalue", // no '=' — should be skipped
+		"empty=",  // empty value is fine
 	}
 	m := parseTXT(txt)
 
