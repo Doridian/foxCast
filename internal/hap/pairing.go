@@ -46,7 +46,7 @@ func PairSetup(sess *Session, addr, deviceID string, deviceLTPK []byte, pin stri
 		return nil, fmt.Errorf("pair-setup M1: %w", err)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("pair-setup M1: HTTP %d body=%x", resp.StatusCode, body)
+		return nil, fmt.Errorf("pair-setup M1: HTTP %d", resp.StatusCode)
 	}
 
 	// --- Parse M2: Salt + ServerPublicKey ---
