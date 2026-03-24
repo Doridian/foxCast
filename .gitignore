@@ -12,3 +12,6 @@ testfixtures/*.pyc
 # Credentials persisted by the binary during testing
 *.credentials.json
 ~/.config/foxcast/
+
+# Video files
+*.mov
