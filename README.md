@@ -13,7 +13,7 @@ The minimal end-to-end proof: instruct an Apple TV to play a URL. The Apple TV f
 - Instruct an Apple TV to play a given URL (`POST /play`)
 - Serve a local file over HTTP so it can be played from disk
 - Runs on Linux
-- Implemented in Go or Rust
+- Implemented in Go
 
 ## Post-MVP
 
