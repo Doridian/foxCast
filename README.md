@@ -33,6 +33,7 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 - [06 - Screen Mirroring](docs/06-screen-mirroring.md)
 - [07 - Data Formats](docs/07-data-formats.md)
 - [08 - Cryptography](docs/08-cryptography.md)
+- [09 - Implementation Plan](docs/09-implementation-plan.md)
 
 ## Sources
 
