@@ -249,8 +249,16 @@ func (c *Client) GetInfo() (*InfoResponse, error) {
 // Play instructs the receiver to fetch and play url.
 // startPos is a normalized position from 0.0 (start) to 1.0 (end).
 func (c *Client) Play(url string, startPos float64) error {
-	body := fmt.Sprintf("Content-Location: %s\r\nStart-Position: %f\r\n", url, startPos)
-	_, _, err := c.doCmd("POST", "/play", "text/parameters", []byte(body))
+	payload := map[string]interface{}{
+		"Content-Location": url,
+		"Start-Position":   startPos,
+	}
+	body, err := plist.Marshal(payload, plist.BinaryFormat)
+	if err != nil {
+		return fmt.Errorf("airplay: marshal /play body: %w", err)
+	}
+
+	_, _, err = c.doCmd("POST", "/play", "application/x-apple-binary-plist", body)
 	return err
 }
 
