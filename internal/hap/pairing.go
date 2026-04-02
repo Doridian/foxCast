@@ -29,8 +29,6 @@ func PairSetup(sess *Session, addr, deviceID string, deviceLTPK []byte, pin stri
 	req, _ := http.NewRequest("POST", "http://"+addr+"/pair-pin-start", http.NoBody)
 	req.Header.Set("User-Agent", userAgent)
 	req.Header["X-Apple-HKP"] = []string{"3"}
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Content-Length", "0")
 	if _, _, err := sess.Do(req); err != nil {
 		// Non-fatal: some receivers don't implement this endpoint.
 		_ = err
@@ -299,7 +297,6 @@ func doTLV8(sess *Session, addr, path string, body []byte) (*http.Response, []by
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("User-Agent", userAgent)
 	req.Header["X-Apple-HKP"] = []string{"3"}
-	req.Header.Set("Connection", "keep-alive")
 	req.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(body)), nil
 	}

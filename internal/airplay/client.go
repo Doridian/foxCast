@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -145,7 +146,6 @@ func dialEventSession(dev *mdns.Device, creds *hap.Credentials, sessionID, passw
 	reverseReq.Header.Set("Connection", "Upgrade")
 	reverseReq.Header.Set("X-Apple-Purpose", "event")
 	reverseReq.Header.Set("X-Apple-Session-ID", sessionID)
-	reverseReq.Header.Set("Content-Length", "0")
 
 	resp, _, err := eventSess.Do(reverseReq)
 	if err != nil {
@@ -269,6 +269,18 @@ func (c *Client) PlaybackInfo() (*PlaybackInfoResponse, error) {
 		return nil, fmt.Errorf("airplay: parse /playback-info: %w", err)
 	}
 	return &info, nil
+}
+
+// PlaybackInfo queries current playback state from the receiver.
+func (c *Client) ServerInfo() (*PlaybackInfoResponse, error) {
+	resp, body, err := c.doCmd("GET", "/server-info", "", nil)
+	if err != nil {
+		return nil, fmt.Errorf("airplay: GET /server-info: %w", err)
+	}
+
+	log.Printf("TODO: Server info response: %v [%s]", resp, string(body))
+
+	return nil, nil
 }
 
 // doCmd sends an HTTP command to the receiver and returns the response.
