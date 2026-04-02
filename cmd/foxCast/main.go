@@ -140,6 +140,18 @@ func cmdPlay(addr, url string) error {
 	}
 	fmt.Println("Playback started. Press Ctrl+C to stop.")
 
+	go func() {
+		for {
+			info, err := client.PlaybackInfo()
+			if err != nil {
+				fmt.Printf("Warning: could not fetch playback info: %v\n", err)
+			} else {
+				fmt.Printf("Playback info: %+v\n", info)
+			}
+			time.Sleep(time.Second * 5)
+		}
+	}()
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig

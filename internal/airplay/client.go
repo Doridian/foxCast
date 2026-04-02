@@ -47,20 +47,19 @@ type Client struct {
 
 // Connect dials the receiver, performs pair-setup if no credentials are saved,
 // then runs pair-verify to establish the encrypted session.
-//
-// If dev.Features is zero (e.g. a manually specified host:port), Connect
-// fetches /info first to discover the receiver's capabilities.
 func Connect(dev *mdns.Device, pin string) (*Client, error) {
 	conn, err := net.Dial("tcp", dev.Addr())
 	if err != nil {
 		return nil, fmt.Errorf("airplay: dial %s: %w", dev.Addr(), err)
 	}
 	sess := hap.NewSession(conn)
+	sessionID := newSessionID()
+	client := &Client{dev: dev, sess: sess, sessionID: sessionID}
 
 	// If we do not have feature flags yet, fetch /info on the plaintext connection.
 	if dev.Features == 0 {
-		if info, err := fetchInfoUnencrypted(sess, dev.Addr()); err == nil {
-			dev.Features = info.Features
+		if info, err := client.GetInfo(); err == nil {
+			dev.Features = mdns.FeatureFlags(info.Features)
 			if dev.DeviceID == dev.Addr() && info.DeviceID != "" {
 				dev.DeviceID = info.DeviceID
 			}
@@ -87,8 +86,6 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 		return nil, fmt.Errorf("airplay: pair-verify: %w", err)
 	}
 
-	sessionID := newSessionID()
-
 	// Set up the reverse (PTTH) event channel on a separate TCP connection.
 	// The protocol requires two connections: the main command connection (sess)
 	// and an event connection that transitions to a receiver-driven PTTH channel
@@ -101,7 +98,9 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 
 	go runEventLoop(eventSess)
 
-	return &Client{dev: dev, sess: sess, eventSess: eventSess, sessionID: sessionID, password: creds.Password}, nil
+	client.eventSess = eventSess
+	client.password = creds.Password
+	return client, nil
 }
 
 // runEventLoop reads POST /event requests sent by the receiver over the reversed
@@ -141,7 +140,7 @@ func dialEventSession(dev *mdns.Device, creds *hap.Credentials, sessionID, passw
 		eventSess.Close()
 		return nil, fmt.Errorf("airplay: build /reverse request: %w", err)
 	}
-	reverseReq.Header.Set("User-Agent", "MediaControl/1.0")
+	reverseReq.Header.Set("User-Agent", userAgent)
 	reverseReq.Header.Set("Upgrade", "PTTH/1.0")
 	reverseReq.Header.Set("Connection", "Upgrade")
 	reverseReq.Header.Set("X-Apple-Purpose", "event")
@@ -194,31 +193,6 @@ func newSessionID() string {
 	)
 }
 
-// fetchInfoUnencrypted does a plaintext GET /info before pairing to discover
-// the receiver's feature flags and device ID.
-func fetchInfoUnencrypted(sess *hap.Session, addr string) (*infoResponse, error) {
-	req, err := http.NewRequest("GET", "http://"+addr+"/info", http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	_, body, err := sess.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	var info infoResponse
-	if _, err := plist.Unmarshal(body, &info); err != nil {
-		return nil, err
-	}
-	return &info, nil
-}
-
-// infoResponse holds just the fields from /info we need before pairing.
-type infoResponse struct {
-	DeviceID string            `plist:"deviceID"`
-	Features mdns.FeatureFlags `plist:"features"`
-}
-
 // Close closes the underlying connections.
 func (c *Client) Close() error {
 	_ = c.eventSess.Close()
@@ -227,14 +201,7 @@ func (c *Client) Close() error {
 
 // GetInfo fetches the receiver's capability information.
 func (c *Client) GetInfo() (*InfoResponse, error) {
-	req, err := http.NewRequest("GET", "http://"+c.dev.Addr()+"/info", http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("X-Apple-Session-ID", c.sessionID)
-
-	_, body, err := c.sess.Do(req)
+	_, body, err := c.doCmd("GET", "/info", "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("airplay: GET /info: %w", err)
 	}
@@ -292,14 +259,7 @@ type PlaybackInfoResponse struct {
 
 // PlaybackInfo queries current playback state from the receiver.
 func (c *Client) PlaybackInfo() (*PlaybackInfoResponse, error) {
-	req, err := http.NewRequest("GET", "http://"+c.dev.Addr()+"/playback-info", http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("X-Apple-Session-ID", c.sessionID)
-
-	_, body, err := c.sess.Do(req)
+	_, body, err := c.doCmd("GET", "/playback-info", "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("airplay: GET /playback-info: %w", err)
 	}
