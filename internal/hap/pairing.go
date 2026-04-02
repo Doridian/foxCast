@@ -181,6 +181,7 @@ func PairSetup(sess *Session, addr, deviceID string, deviceLTPK []byte, pin stri
 		ClientID:        clientID,
 		ClientLTPK:      clientLTPK,
 		ClientLTSK:      clientLTSK,
+		Password:        pin,
 	}
 	if err := SaveCredentials(creds); err != nil {
 		return nil, fmt.Errorf("pair-setup: save credentials: %w", err)

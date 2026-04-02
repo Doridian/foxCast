@@ -18,6 +18,7 @@ type Credentials struct {
 	ClientID        string `json:"clientID"`        // our UUID pairing identifier
 	ClientLTPK      []byte `json:"clientLTPK"`      // our Ed25519 public key (32 bytes)
 	ClientLTSK      []byte `json:"clientLTSK"`      // our Ed25519 private key (64 bytes)
+	Password        string `json:"password"`        // AirPlay PIN/password for HTTP Digest auth
 }
 
 // credentialsDir returns the directory for credential files.
