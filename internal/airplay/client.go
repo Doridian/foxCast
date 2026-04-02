@@ -43,7 +43,8 @@ type Client struct {
 	sess      *hap.Session
 	eventSess *hap.Session // separate encrypted connection for the PTTH /reverse event channel
 	sessionID string       // X-Apple-Session-ID UUID, consistent across the session
-	password  string       // AirPlay device password for HTTP Digest auth (empty if none)
+	deviceID  string
+	password  string // AirPlay device password for HTTP Digest auth (empty if none)
 }
 
 // Connect dials the receiver, performs pair-setup if no credentials are saved,
@@ -55,7 +56,8 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 	}
 	sess := hap.NewSession(conn)
 	sessionID := newSessionID()
-	client := &Client{dev: dev, sess: sess, sessionID: sessionID}
+	deviceID := newDeviceID()
+	client := &Client{dev: dev, sess: sess, sessionID: sessionID, deviceID: deviceID}
 
 	// If we do not have feature flags yet, fetch /info on the plaintext connection.
 	if dev.Features == 0 {
@@ -82,6 +84,8 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 		}
 	}
 
+	client.password = creds.Password
+
 	if err := hap.PairVerify(sess, dev.Addr(), creds); err != nil {
 		sess.Close()
 		return nil, fmt.Errorf("airplay: pair-verify: %w", err)
@@ -91,7 +95,7 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 	// The protocol requires two connections: the main command connection (sess)
 	// and an event connection that transitions to a receiver-driven PTTH channel
 	// after POST /reverse. They cannot share the same socket.
-	eventSess, err := dialEventSession(dev, creds, sessionID, creds.Password)
+	eventSess, err := client.dialEventSession(dev, creds)
 	if err != nil {
 		sess.Close()
 		return nil, err
@@ -100,7 +104,6 @@ func Connect(dev *mdns.Device, pin string) (*Client, error) {
 	go runEventLoop(eventSess)
 
 	client.eventSess = eventSess
-	client.password = creds.Password
 	return client, nil
 }
 
@@ -124,7 +127,7 @@ func runEventLoop(sess *hap.Session) {
 
 // dialEventSession opens a second encrypted connection to the receiver, runs
 // pair-verify, then sends POST /reverse to establish the PTTH event channel.
-func dialEventSession(dev *mdns.Device, creds *hap.Credentials, sessionID, password string) (*hap.Session, error) {
+func (c *Client) dialEventSession(dev *mdns.Device, creds *hap.Credentials) (*hap.Session, error) {
 	conn, err := net.Dial("tcp", dev.Addr())
 	if err != nil {
 		return nil, fmt.Errorf("airplay: event dial %s: %w", dev.Addr(), err)
@@ -136,41 +139,19 @@ func dialEventSession(dev *mdns.Device, creds *hap.Credentials, sessionID, passw
 		return nil, fmt.Errorf("airplay: event pair-verify: %w", err)
 	}
 
-	reverseReq, err := http.NewRequest("POST", "http://"+dev.Addr()+"/reverse", http.NoBody)
+	resp, _, err := c.doCmdCustom("POST", "/reverse", "", nil, func(req *http.Request) {
+		req.Header.Set("Upgrade", "PTTH/1.0")
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("X-Apple-Purpose", "event")
+	}, eventSess)
 	if err != nil {
 		eventSess.Close()
-		return nil, fmt.Errorf("airplay: build /reverse request: %w", err)
-	}
-	reverseReq.Header.Set("User-Agent", userAgent)
-	reverseReq.Header.Set("Upgrade", "PTTH/1.0")
-	reverseReq.Header.Set("Connection", "Upgrade")
-	reverseReq.Header.Set("X-Apple-Purpose", "event")
-	reverseReq.Header.Set("X-Apple-Session-ID", sessionID)
-
-	resp, _, err := eventSess.Do(reverseReq)
-	if err != nil {
-		eventSess.Close()
-		return nil, fmt.Errorf("airplay: /reverse: %w", err)
-	}
-
-	// Handle Digest auth challenge: parse nonce/realm and retry once with credentials.
-	if resp.StatusCode == http.StatusUnauthorized {
-		realm, nonce := parseDigestChallenge(resp.Header.Get("Www-Authenticate"))
-		if realm == "" || nonce == "" {
-			eventSess.Close()
-			return nil, fmt.Errorf("airplay: /reverse: 401 without parseable Digest challenge")
-		}
-		reverseReq.Header.Set("Authorization", buildDigestAuth("POST", "/reverse", realm, nonce, password))
-		resp, _, err = eventSess.Do(reverseReq)
-		if err != nil {
-			eventSess.Close()
-			return nil, fmt.Errorf("airplay: /reverse (auth): %w", err)
-		}
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		eventSess.Close()
-		return nil, fmt.Errorf("airplay: /reverse: unexpected status %d", resp.StatusCode)
+		return nil, fmt.Errorf("airplay: /reverse: status is not 101, but instead: %d", resp.StatusCode)
 	}
 
 	return eventSess, nil
@@ -191,6 +172,14 @@ func newSessionID() string {
 		hex.EncodeToString(b[8:10]),
 		hex.EncodeToString(b[10:16]),
 	)
+}
+
+func newDeviceID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("airplay: generate device ID: " + err.Error())
+	}
+	return "0x" + hex.EncodeToString(b[:])
 }
 
 // Close closes the underlying connections.
@@ -286,6 +275,10 @@ func (c *Client) ServerInfo() (*PlaybackInfoResponse, error) {
 // doCmd sends an HTTP command to the receiver and returns the response.
 // If the receiver responds with a Digest auth challenge, it retries once with credentials.
 func (c *Client) doCmd(method, path, contentType string, body []byte) (*http.Response, []byte, error) {
+	return c.doCmdCustom(method, path, contentType, body, nil, c.sess)
+}
+
+func (c *Client) doCmdCustom(method, path, contentType string, body []byte, customizeReq func(*http.Request), sess *hap.Session) (*http.Response, []byte, error) {
 	buildReq := func(authHeader string) (*http.Request, error) {
 		var bodyReader io.Reader
 		if len(body) > 0 {
@@ -299,11 +292,15 @@ func (c *Client) doCmd(method, path, contentType string, body []byte) (*http.Res
 		}
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("X-Apple-Session-ID", c.sessionID)
+		req.Header.Set("X-Apple-Device-ID", c.deviceID)
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)
 		}
 		if authHeader != "" {
 			req.Header.Set("Authorization", authHeader)
+		}
+		if customizeReq != nil {
+			customizeReq(req)
 		}
 		return req, nil
 	}
@@ -312,7 +309,7 @@ func (c *Client) doCmd(method, path, contentType string, body []byte) (*http.Res
 	if err != nil {
 		return nil, nil, err
 	}
-	resp, respBody, err := c.sess.Do(req)
+	resp, respBody, err := sess.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("airplay: %s %s: %w", method, path, err)
 	}
@@ -325,14 +322,14 @@ func (c *Client) doCmd(method, path, contentType string, body []byte) (*http.Res
 			if err != nil {
 				return nil, nil, err
 			}
-			resp, respBody, err = c.sess.Do(req)
+			resp, respBody, err = sess.Do(req)
 			if err != nil {
 				return nil, nil, fmt.Errorf("airplay: %s %s (auth): %w", method, path, err)
 			}
 		}
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < 100 || resp.StatusCode >= 300 {
 		return nil, nil, fmt.Errorf("airplay: %s %s: unexpected status %d", method, path, resp.StatusCode)
 	}
 	return resp, respBody, nil
