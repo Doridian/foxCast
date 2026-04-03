@@ -1,5 +1,7 @@
 # foxCast
 
+# THIS: https://air-display.github.io/airplay-internal/media_cast_service.html The connection order might matter???
+
 foxCast is a project that aims to implement the current version of Apple's AirPlay protocol on the sender end.
 
 In the end, it should be easy to stream any type of content to an Apple TV or other AirPlay receiver.
