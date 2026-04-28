@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/grandcat/zeroconf v1.0.0
-	golang.org/x/crypto v0.49.0
+	golang.org/x/crypto v0.50.0
 	howett.net/plist v1.0.1
 )
 
