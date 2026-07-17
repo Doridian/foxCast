@@ -12,7 +12,7 @@ jobs:
     runs-on: ${{ vars.MANAGED_RUNNER_TAG || 'ubuntu-24.04' }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
-      - uses: https://data.forgejo.org/actions/setup-go@v6
+      - uses: https://data.forgejo.org/actions/setup-go@v7
         with:
           go-version-file: 'go.mod'
           check-latest: true
