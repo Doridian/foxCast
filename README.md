@@ -1,27 +1,40 @@
 # foxCast
 
-# THIS: https://air-display.github.io/airplay-internal/media_cast_service.html The connection order might matter???
-
 foxCast is a project that aims to implement the current version of Apple's AirPlay protocol on the sender end.
 
 In the end, it should be easy to stream any type of content to an Apple TV or other AirPlay receiver.
 
-## MVP
+## Status
 
-The minimal end-to-end proof: instruct an Apple TV to play a URL. The Apple TV fetches and decodes the media itself — no RTP, no encoding, no timing sync required on the sender side.
+| Feature | State |
+|---------|-------|
+| mDNS discovery | ✅ |
+| Pairing (transient, PIN, password/Digest; saved credentials) | ✅ |
+| Video URL playback (`play <url>`), incl. local files via built-in HTTP server | ✅ against the test receiver; ⏳ untested on hardware |
+| Screen mirroring (`mirror`, H.264/HEVC + audio, Wayland/X11) | ✅ against the test receiver; hardware-tested upstream in doubletake (AppleTV11,1/14,1, tvOS 27) |
+| Playback controls in the CLI (pause/seek) | API exists (`PlaybackSession.Rate/Scrub`), not yet exposed |
+| Audio-only streaming (RAOP) to speakers | ⏳ |
 
-- Discover Apple TV devices on the local network via mDNS
-- Pair with an Apple TV (HAP pair-setup, persist credentials; pair-verify on each connection)
-- Instruct an Apple TV to play a given URL (`POST /play`)
-- Serve a local file over HTTP so it can be played from disk
-- Runs on Linux
-- Implemented in Go
+## Usage
 
-## Post-MVP
+```sh
+foxCast discover                                  # list receivers
+foxCast pair  -target 10.0.0.5                    # PIN pairing, saves credentials
+foxCast play  -target 10.0.0.5 https://example.com/video.m3u8
+foxCast play  -target 10.0.0.5 ./movie.mp4        # served from this machine
+foxCast mirror -target 10.0.0.5                   # screen sharing (needs GStreamer)
+foxCast mirror -target 10.0.0.5 -test -no-audio   # synthetic source
+```
 
-- Playback controls for URL playback: play/pause (`/rate`), seek (`/scrub`), stop
-- Event handling: read playback state notifications from the reverse (PTTH) channel
-- Audio-only streaming via RAOP (required for non-Apple-TV AirPlay receivers, e.g. speakers)
+Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOXCAST_CODE`
+(preferred over `-code`). `-debug` or `FOXCAST_TRACE=1` enables protocol logging.
+
+Mirroring needs GStreamer (`gst-launch-1.0` with base/good/bad/ugly/libav plugins) and, on
+Wayland, xdg-desktop-portal. The receiver probes a local UDP timing port during SETUP; use
+`-port-range MIN-MAX` to pin the ports if a firewall is in the way.
+
+For hardware-free testing, run `go run ./cmd/foxCast-test-receiver -profile modern -auth none -listen 127.0.0.1:7000`
+and point foxCast at `-target 127.0.0.1`.
 
 ## Documentation
 
@@ -35,7 +48,6 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 - [06 - Screen Mirroring](docs/06-screen-mirroring.md)
 - [07 - Data Formats](docs/07-data-formats.md)
 - [08 - Cryptography](docs/08-cryptography.md)
-- [09 - Implementation Plan](docs/09-implementation-plan.md)
 
 ## Sources
 
@@ -47,6 +59,9 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 - https://github.com/mikebrady/nqptp — PTP subset daemon for AirPlay 2 multi-room sync (C); ports 319/320
 
 ### Sender Implementations
+
+- https://github.com/omarroth/doubletake — AirPlay screen mirroring sender for Linux (Go, LGPL-3.0-or-later); pure-Go FairPlay SAP, encrypted RTSP, mirror/audio streams; hardware-tested on AppleTV11,1 / tvOS 27. Basis for foxCast's mirroring support
+- https://github.com/akustikrausch/airplay2-sender-cpp — AirPlay 2 realtime audio sender (C++); documents the exact AP2 handshake order (encrypted control channel, SETUP → event channel → RECORD, event-channel keep-alive)
 
 - https://github.com/postlund/pyatv — Apple TV client library (Python); best source for sender-side AirPlay 2 SETUP plist format, HAP session channel setup, MRP tunneling
 - https://github.com/philippe44/RAOP-Player — AirPlay audio sender/RAOP client (C); shows RTSP ANNOUNCE SDP construction, sender-side auth
@@ -60,6 +75,7 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 
 - https://emanuelecozzi.net/docs/airplay2 — Unofficial AirPlay 2 protocol docs; feature flags, encryption layer overview
 - https://nto.github.io/AirPlay.html — AirPlay 1 HTTP API reference; `/play`, `/reverse`, `/scrub`, PTTH reverse connection, SDP format
+- https://air-display.github.io/airplay-internal/ — receiver-side notes incl. a full media-cast request log (`/info` → `fp-setup` → `SETUP` → pairing → `/reverse` → `/play`)
 
 ## Later goals
 
@@ -67,3 +83,7 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 - xdg-desktop-portal integration for app and window capture
 - Runs on Windows as well
 - Support for any AirPlay receiver type (not just Apple TV)
+
+## License
+
+foxCast is licensed under the [GNU Lesser General Public License v3.0 or later](LICENSE) (`LGPL-3.0-or-later`). See [COPYING.GPL](COPYING.GPL) for the incorporated GPLv3 terms. Portions are derived from [doubletake](https://github.com/omarroth/doubletake) (LGPL-3.0-or-later).

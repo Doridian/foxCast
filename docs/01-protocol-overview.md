@@ -12,8 +12,6 @@ Three distinct modes of operation exist from a sender's perspective:
 | **Screen mirroring** | Stream H.264/H.265 video + AAC-ELD audio from sender's screen; HTTP session setup + proprietary TCP stream for video | 7100 |
 | **Video URL playback** | Instruct an Apple TV to fetch and play a remote URL directly (Apple TV downloads the video itself) | 7000 |
 
-For the MVP, the primary targets are **audio streaming** and **video URL playback**.
-
 ## AirPlay 2 vs AirPlay 1 Differences
 
 | Feature | AirPlay 1 | AirPlay 2 |

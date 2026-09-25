@@ -1,0 +1,367 @@
+package main
+
+// Connection and pairing flow shared by all receiver subcommands. Adapted from
+// doubletake's cmd/doubletake (LGPL-3.0-or-later).
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"git.foxden.network/FoxDen/foxCast/internal/sender"
+)
+
+// codeEnvironment carries the pairing PIN / receiver password. It takes
+// precedence over -code so the value stays out of shell history and ps.
+const codeEnvironment = "FOXCAST_CODE"
+
+// traceEnvironment enables verbose protocol logging, like -debug.
+const traceEnvironment = "FOXCAST_TRACE"
+
+const discoveryTimeout = 5 * time.Second
+
+// connectOptions are the flags shared by every subcommand that talks to a
+// receiver.
+type connectOptions struct {
+	target      string
+	port        int
+	code        string
+	credFile    string
+	credBackend string
+	forcePair   bool
+	portRange   string
+	debug       bool
+
+	portMin, portMax int
+}
+
+func (o *connectOptions) register(flags *flag.FlagSet) {
+	flags.StringVar(&o.target, "target", "", "receiver IP address or hostname (skip discovery)")
+	flags.IntVar(&o.port, "port", 7000, "AirPlay port")
+	flags.StringVar(&o.code, "code", "", "pairing PIN shown on the receiver, or its configured password; prefer $"+codeEnvironment)
+	flags.StringVar(&o.credFile, "creds", sender.DefaultCredentialsPath(), "path to saved pairing credentials")
+	flags.StringVar(&o.credBackend, "cred-backend", "file", "credential storage backend: file or keyring")
+	flags.BoolVar(&o.forcePair, "pair", false, "force new pairing even if credentials exist")
+	flags.StringVar(&o.portRange, "port-range", "", "local UDP port range for timing/audio (e.g. 60000-60010); empty = ephemeral")
+	flags.BoolVar(&o.debug, "debug", false, "verbose protocol logging")
+}
+
+// finish validates the parsed flags and applies process-wide settings.
+func (o *connectOptions) finish(minPorts int) error {
+	var err error
+	o.portMin, o.portMax, err = parsePortRange(o.portRange, minPorts)
+	if err != nil {
+		return fmt.Errorf("invalid -port-range: %w", err)
+	}
+	if env := os.Getenv(codeEnvironment); env != "" {
+		o.code = env
+	}
+	sender.SetDebugMode(o.debug || os.Getenv(traceEnvironment) != "")
+	return nil
+}
+
+// connection is a paired, encrypted control connection to a receiver.
+type connection struct {
+	// addr is the receiver's control address ("host:port").
+	addr   string
+	client *sender.AirPlayClient
+	info   *sender.ReceiverInfo
+	store  *sender.CredentialStore
+}
+
+// connect selects a receiver, connects, and pairs (pair-verify with stored
+// credentials, transient pairing, or PIN pairing as the receiver requires).
+// When fairPlay is set, the FairPlay SAP handshake is run afterwards.
+func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection, error) {
+	addr, port := o.target, o.port
+	var advertisement *sender.AirPlayDevice
+	if addr == "" {
+		device, err := selectDevice(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("discovery: %w", err)
+		}
+		addr, port, advertisement = device.IP, device.Port, device
+		fmt.Printf("selected: %s (%s:%d)\n", device.Name, device.IP, device.Port)
+	}
+
+	store, err := newCredentialStore(o.credBackend, o.credFile)
+	if err != nil {
+		return nil, fmt.Errorf("load credentials: %w", err)
+	}
+
+	credential := o.code
+	newClient := func() *sender.AirPlayClient {
+		if advertisement != nil {
+			device := *advertisement
+			device.IP, device.Port = addr, port
+			return sender.NewAirPlayClientForDevice(device)
+		}
+		return sender.NewAirPlayClient(addr, port)
+	}
+	c := &connection{addr: net.JoinHostPort(addr, strconv.Itoa(port)), client: newClient(), store: store}
+	open := func() error {
+		c.client.SetPassword(credential)
+		if err := c.client.Connect(ctx); err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		info, err := c.client.GetInfo()
+		if err != nil {
+			return fmt.Errorf("get info: %w", err)
+		}
+		c.info = info
+		return nil
+	}
+	reconnect := func() error {
+		_ = c.client.Close()
+		c.client = newClient()
+		return open()
+	}
+	if err := open(); err != nil {
+		_ = c.client.Close()
+		return nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = c.client.Close()
+		}
+	}()
+	log.Printf("connected to: %s (model: %s)", c.info.Name, c.info.Model)
+
+	if credential == "" && c.info.RequiresPassword() {
+		credential = readCredential("Enter the receiver's configured password: ")
+		if credential == "" {
+			return nil, errors.New("password cannot be empty")
+		}
+		c.client.SetPassword(credential)
+	}
+
+	savePairing := func() {
+		if c.client.PairKeys == nil {
+			return
+		}
+		if err := store.SavePairing(c.info.DeviceID, c.client.PairingID,
+			c.client.PairKeys.Ed25519Public, c.client.PairKeys.Ed25519Private,
+			c.client.PairingProtocol()); err != nil {
+			log.Printf("warning: failed to save credentials: %v", err)
+		} else {
+			log.Printf("credentials saved (%s)", o.credBackend)
+		}
+	}
+	pairWithCredential := func(expectPIN bool) error {
+		value := credential
+		if value == "" {
+			if err := c.client.StartPINDisplay(); err != nil {
+				log.Printf("warning: failed to trigger PIN display: %v", err)
+				expectPIN = false
+			}
+			prompt := "Enter the receiver's configured password or pairing PIN: "
+			if expectPIN {
+				prompt = "Enter the PIN shown on the receiver: "
+			}
+			value = readCredential(prompt)
+			if value == "" {
+				return errors.New("pairing credential cannot be empty")
+			}
+		}
+		// The same user-entered value may be needed for Digest auth later.
+		credential = value
+		if err := c.client.Pair(ctx, value); err != nil {
+			return fmt.Errorf("pairing: %w", err)
+		}
+		savePairing()
+		return nil
+	}
+	// pairFresh pairs without stored credentials: SRP when the receiver asks
+	// for a PIN/password, otherwise transient pairing with a PIN fallback.
+	pairFresh := func() error {
+		switch c.info.RequiredPairingCredential() {
+		case sender.PairingCredentialPassword:
+			return pairWithCredential(false)
+		case sender.PairingCredentialPIN:
+			return pairWithCredential(true)
+		}
+		err := c.client.Pair(ctx, "")
+		if err == nil {
+			return nil
+		}
+		if c.info.RequiresPassword() {
+			return fmt.Errorf("transient pairing failed for password-protected receiver: %w", err)
+		}
+		log.Printf("transient pairing failed: %v, requesting pairing credentials", err)
+		// A failed exchange may leave receiver state on this socket.
+		if err := reconnect(); err != nil {
+			return err
+		}
+		return pairWithCredential(false)
+	}
+
+	var saved *sender.SavedCredentials
+	if !o.forcePair {
+		saved = store.Lookup(c.info.DeviceID)
+	}
+	switch {
+	case o.forcePair && c.info.RequiresPassword() && c.info.RequiredPairingCredential() == sender.PairingCredentialNone:
+		// A modern receiver's playback password belongs only to HTTP Digest;
+		// SRP rejects it as a bad PIN.
+		if err := c.client.Pair(ctx, ""); err != nil {
+			return nil, fmt.Errorf("transient pairing failed for password-protected receiver: %w", err)
+		}
+	case o.forcePair:
+		if err := pairWithCredential(!c.info.RequiresPassword()); err != nil {
+			return nil, err
+		}
+	case saved != nil && saved.HasPairingCredentials():
+		log.Printf("using saved credentials (%s)", o.credBackend)
+		verifyErr := c.client.RestorePairingCredentials(saved)
+		if verifyErr == nil {
+			verifyErr = c.client.PairVerify(ctx)
+		}
+		if verifyErr != nil {
+			log.Printf("pair-verify with saved credentials failed: %v", verifyErr)
+			if err := reconnect(); err != nil {
+				return nil, err
+			}
+			if err := pairFresh(); err != nil {
+				return nil, err
+			}
+		}
+	default:
+		if err := pairFresh(); err != nil {
+			return nil, err
+		}
+	}
+	log.Println("pairing complete")
+
+	if fairPlay && c.client.FpEkey == nil {
+		if err := c.client.FairPlaySetup(ctx); err != nil {
+			if !errors.Is(err, sender.ErrFairPlayUnsupported) {
+				return nil, fmt.Errorf("FairPlay setup: %w", err)
+			}
+			log.Printf("FairPlay SAP unsupported (%v); continuing", err)
+		} else {
+			log.Println("FairPlay setup complete")
+		}
+	}
+
+	ok = true
+	return c, nil
+}
+
+func (c *connection) Close() error {
+	return c.client.Close()
+}
+
+// parsePortRange parses "min-max" into inclusive bounds. An empty string
+// returns (0, 0) meaning "let the OS pick".
+func parsePortRange(s string, minPorts int) (int, int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, nil
+	}
+	lo, hi, ok := strings.Cut(s, "-")
+	if !ok {
+		return 0, 0, fmt.Errorf("expected MIN-MAX, got %q", s)
+	}
+	min, err := strconv.Atoi(strings.TrimSpace(lo))
+	if err != nil {
+		return 0, 0, fmt.Errorf("min: %w", err)
+	}
+	max, err := strconv.Atoi(strings.TrimSpace(hi))
+	if err != nil {
+		return 0, 0, fmt.Errorf("max: %w", err)
+	}
+	if min < 1 || max > 65535 || min > max {
+		return 0, 0, fmt.Errorf("range %d-%d out of bounds (1-65535, min<=max)", min, max)
+	}
+	if max-min+1 < minPorts {
+		return 0, 0, fmt.Errorf("range %d-%d too small; need %d consecutive UDP ports", min, max, minPorts)
+	}
+	return min, max, nil
+}
+
+func readCredential(prompt string) string {
+	fmt.Print(prompt)
+	// Read the whole line: a password may contain spaces.
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
+func discover(ctx context.Context) ([]sender.AirPlayDevice, error) {
+	discoverCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
+	devices, err := sender.DiscoverAirPlayDevices(discoverCtx)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		return compareIPs(devices[i].IP, devices[j].IP) < 0
+	})
+	return devices, nil
+}
+
+func selectDevice(ctx context.Context) (*sender.AirPlayDevice, error) {
+	fmt.Println("searching for AirPlay receivers...")
+	devices, err := discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(devices) == 0 {
+		return nil, errors.New("no AirPlay receivers found")
+	}
+	fmt.Println("\navailable devices:")
+	for i, d := range devices {
+		fmt.Printf("  [%d] %s (%s) - %s\n", i+1, d.Name, d.Model, d.IP)
+	}
+	input := strings.TrimSpace(readCredential("\nselect device [1]: "))
+	if input == "" {
+		return &devices[0], nil
+	}
+	idx, err := strconv.Atoi(input)
+	if err != nil || idx < 1 || idx > len(devices) {
+		return nil, errors.New("invalid selection")
+	}
+	return &devices[idx-1], nil
+}
+
+// compareIPs orders IP address strings numerically, non-IPs last.
+func compareIPs(a, b string) int {
+	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
+	switch {
+	case ipA == nil && ipB == nil:
+		return strings.Compare(a, b)
+	case ipA == nil:
+		return 1
+	case ipB == nil:
+		return -1
+	}
+	return strings.Compare(string(ipA.To16()), string(ipB.To16()))
+}
+
+func newCredentialStore(backend, filePath string) (*sender.CredentialStore, error) {
+	switch backend {
+	case "keyring":
+		kb, err := sender.NewKeyringBackend()
+		if err != nil {
+			return nil, err
+		}
+		return sender.NewCredentialStoreWithBackend(kb), nil
+	case "file":
+		return sender.NewCredentialStore(filePath)
+	default:
+		return nil, fmt.Errorf("unknown credential backend %q (use \"file\" or \"keyring\")", backend)
+	}
+}

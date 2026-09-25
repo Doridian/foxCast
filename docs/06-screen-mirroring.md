@@ -2,7 +2,7 @@
 
 Screen mirroring streams H.264 or H.265 video (with AAC-ELD audio) from the sender's display to an AirPlay receiver. This is more complex than video URL playback and requires real-time encoding on the sender side.
 
-> **MVP Note:** This is a post-MVP feature. Implement video URL playback first.
+> **Reference implementation:** [omarroth/doubletake](https://github.com/omarroth/doubletake) is a working Go mirroring sender (tested on AppleTV11,1 / tvOS 27) and is the source of truth for anything below that disagrees with it. Notably, modern receivers require a FairPlay SAP handshake (`fp-setup`) whose output wraps the stream key (`ekey`/`eiv`), and the SETUP is split into a control-only SETUP followed by per-stream SETUPs (with one media-first fallback if the control-only form is rejected).
 
 ## Overview
 

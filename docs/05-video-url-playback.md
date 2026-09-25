@@ -2,14 +2,100 @@
 
 This mode instructs an Apple TV to fetch and play a remote URL. The Apple TV downloads the video itself; the sender only sends control commands. This is the simplest way to play video on an Apple TV and is the recommended first implementation target.
 
-## Connection Setup
+## Connection Setup (AirPlay 2 receivers — current tvOS)
 
-Requires **two persistent TCP connections** to port 7000:
+> **This replaces the AirPlay 1 `/reverse` flow for HAP-paired receivers.** Sending
+> `/reverse` + `/play` straight after pair-verify does not start playback on modern tvOS. The order below is taken
+> from pyatv's `AirPlayV2.play_url` (`pyatv/protocols/raop/protocols/airplayv2.py`),
+> cross-checked against the AP2 sender recipe in `akustikrausch/airplay2-sender-cpp`
+> and the session handling in `omarroth/doubletake` (tested on AppleTV11,1 / tvOS 27).
+
+All steps use **one** TCP connection to port 7000 (the "control connection"),
+plus one outbound TCP connection to the receiver's `eventPort`. The control
+connection must stay open for the whole playback: closing it stops the video.
+
+| # | Step | Notes |
+|---|------|-------|
+| 1 | `GET /info` (plaintext, optional) | Feature flags, `pk`, display info |
+| 2 | `POST /pair-verify` M1–M4 (pair-setup first if no stored credentials) | See 03-authentication.md |
+| 3 | **Encrypt the control connection immediately** | ChaCha20-Poly1305, `Control-Salt` / `Control-Write/Read-Encryption-Key`. The receiver drops the connection ~1 ms after pair-verify if the next request is plaintext. |
+| 4 | Start a local UDP NTP timing responder | Its port goes in the SETUP body as `timingPort` |
+| 5 | `SETUP rtsp://<local-ip>/<session-id> RTSP/1.0` with the session plist | **Must be RTSP `SETUP`**, not `POST /setup` (404). Response contains `eventPort`. |
+| 6 | Connect TCP to `eventPort`, encrypt it | HKDF salt `Events-Salt`; keys are **swapped** relative to control: we *read* with `Events-Write-Encryption-Key` and *write* with `Events-Read-Encryption-Key` |
+| 7 | Serve the event channel | Receiver pushes `POST /command` (e.g. `updateInfo`). Reply `RTSP/1.0 200 OK` with only `Server` + `CSeq` headers. **This is the keep-alive** — unanswered, the session is torn down after ~25–30 s. |
+| 8 | Start `POST /feedback RTSP/1.0` every 2 s on the control connection | Best effort; does not replace step 7 |
+| 9 | `RECORD rtsp://<local-ip>/<session-id> RTSP/1.0` | Must come after the event channel is up (otherwise `RECORD` → 500) |
+| 10 | `POST /play` (binary plist, see below) | Retry on HTTP 500 (pyatv retries up to 3× with 1 s delay) |
+| 11 | `PUT /setProperty?isInterestedInDateRange` `{value: true}`, `PUT /setProperty?actionAtItemEnd` `{value: 0}` | |
+| 12 | `POST /rate?value=1.000000` | **Required** — otherwise the item loads paused |
+| 13 | Poll `GET /playback-info` every 1 s until `duration` disappears | Also surfaces `error.code` / `error.domain` |
+
+pyatv's RTSP requests carry `CSeq`, `DACP-ID`, `Active-Remote`,
+`Client-Instance`, and `User-Agent: AirPlay/550.10`. foxCast (`internal/sender/playback.go`)
+instead reuses doubletake's hardware-tested framing: `CSeq`,
+`User-Agent: AirPlay/935.7.1`, `Content-Length`, and no DACP headers; its event
+channel replies also include `Content-Length: 0`. If URL playback misbehaves on
+hardware, these differences are the first thing to try. `/play` is sent with an
+`HTTP/1.1` request line, everything else with `RTSP/1.0`, all on the same
+encrypted connection.
+
+### Session SETUP body (step 5)
+
+```
+{
+  deviceID:                 "AA:BB:CC:DD:EE:FF",   // sender MAC-style ID
+  sessionUUID:              <UUID, upper-case>,
+  timingPort:               <local UDP port>,
+  timingProtocol:           "NTP",
+  isMultiSelectAirPlay:     true,
+  groupContainsGroupLeader: false,
+  macAddress:               "AA:BB:CC:DD:EE:FF",
+  model:                    "iPhone14,3",
+  name:                     "foxCast",
+  osBuildVersion:           "20F66",
+  osName:                   "iPhone OS",
+  osVersion:                "16.5",
+  senderSupportsRelay:      false,
+  sourceVersion:            "690.7.1",
+  statsCollectionEnabled:   false
+}
+```
+
+### `/play` body (step 10)
+
+Headers: `Content-Type: application/x-apple-binary-plist`,
+`X-Apple-ProtocolVersion: 1`, `X-Apple-Stream-ID: 1`, `X-Apple-Session-ID: <UUID>`.
+
+```
+{
+  Content-Location:       <url>,
+  Start-Position-Seconds: <float>,
+  uuid:                   <UUID>,
+  streamType:             1,
+  mediaType:              "file",
+  rate:                   1.0,
+  volume:                 1.0,
+  playbackRestrictions:   0,
+  referenceRestrictions:  3,
+  mightSupportStorePastisKeyRequests: true,
+  SenderMACAddress:       "AA:BB:CC:DD:EE:FF",
+  model:                  "iPhone14,3",
+  clientBundleID:         <reverse-DNS id>,
+  clientProcName:         <reverse-DNS id>,
+  osBuildVersion:         "20G1116"
+  // pyatv also sends timing fields (secureConnectionMs, infoMs, connectMs,
+  // authMs, bonjourMs, postAuthMs); believed optional.
+}
+```
+
+---
+
+## Legacy Connection Setup (AirPlay 1 receivers)
+
+Older receivers use **two persistent TCP connections** to port 7000:
 
 1. **Main connection** — sender sends commands to receiver
 2. **Reverse (event) connection** — receiver sends event notifications back to sender
-
-Both connections go through HAP session encryption after pair-verify.
 
 ### Reverse Connection (PTTH)
 
@@ -108,9 +194,10 @@ Content-Type: application/x-apple-binary-plist
 
 ---
 
-## Event Notifications (Reverse Channel)
+## Event Notifications (Legacy Reverse Channel)
 
-The receiver sends `POST /event` requests to the sender over the reverse PTTH connection:
+On AirPlay 2 receivers events arrive on the encrypted `eventPort` channel
+instead (see step 7 above). On AirPlay 1 receivers, the receiver sends `POST /event` requests to the sender over the reverse PTTH connection:
 
 ```
 POST /event HTTP/1.0

@@ -1,13 +1,8 @@
 # Go
 /foxCast
 /cmd/foxCast/foxCast
-
-# Python / uv
-testfixtures/.venv/
-testfixtures/__pycache__/
-testfixtures/*.pyc
-**/__pycache__/
-**/*.pyc
+/foxCast-test-receiver
+/cmd/foxCast-test-receiver/foxCast-test-receiver
 
 # Credentials persisted by the binary during testing
 *.credentials.json

@@ -1,8 +1,0 @@
-[project]
-name = "testfixtures"
-version = "0.1.0"
-description = "Test fixtures for foxCast integration tests (pyatv fake AirPlay device)"
-requires-python = ">=3.12"
-dependencies = [
-    "pyatv",
-]
