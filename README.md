@@ -33,7 +33,8 @@ foxCast mirror -target 10.0.0.5 -test -no-audio   # synthetic source
 Matroska files are rewrapped as HLS with fMP4 segments while playing; video and audio are
 copied, not re-encoded. H.264/HEVC video (incl. HDR10, HLG, Dolby Vision 5/8; profile 7 plays
 its HDR10 base layer) and AAC/AC-3/E-AC-3/FLAC/Opus/ALAC/MP3 audio work. Every compatible audio
-track is selectable on the Apple TV; `-audio 3,5` picks tracks. TrueHD/DTS tracks and subtitles
+track is selectable on the Apple TV; `-audio 3,5` picks tracks. Text subtitles (SRT, ASS/SSA,
+WebVTT) become selectable WebVTT subtitles. TrueHD/DTS audio and bitmap subtitles (PGS, VobSub)
 are skipped. See [docs/09](docs/09-matroska-transmuxing.md).
 
 The receiver fetches local and transmuxed media from foxCast's HTTP server, so a host firewall

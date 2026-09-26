@@ -28,6 +28,7 @@ const (
 //	/master.m3u8
 //	/video.m3u8   /video/init.mp4   /video/<n>.m4s
 //	/audio/<track>.m3u8   /audio/<track>/init.mp4   /audio/<track>/<n>.m4s
+//	/subs/<track>.m3u8    /subs/<track>/<n>.vtt
 func (s *Session) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -39,12 +40,12 @@ func (s *Session) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 1 && parts[0] == masterPlaylist:
 		s.writeBody(w, r, contentTypePlaylist, []byte(s.masterPlaylist()))
 	case len(parts) == 1 && parts[0] == videoPlaylist:
-		s.writeBody(w, r, contentTypePlaylist, []byte(s.mediaPlaylist("video/")))
+		s.writeBody(w, r, contentTypePlaylist, []byte(s.mediaPlaylist("video/", true)))
 	case len(parts) == 2 && parts[0] == "video":
 		s.serveTrackFile(w, r, nil, parts[1])
 	case len(parts) == 2 && parts[0] == "audio" && strings.HasSuffix(parts[1], ".m3u8"):
 		if a := s.audioTrack(strings.TrimSuffix(parts[1], ".m3u8")); a != nil {
-			s.writeBody(w, r, contentTypePlaylist, []byte(s.mediaPlaylist(fmt.Sprintf("%d/", a.src.Number))))
+			s.writeBody(w, r, contentTypePlaylist, []byte(s.mediaPlaylist(fmt.Sprintf("%d/", a.src.Number), true)))
 			return
 		}
 		http.NotFound(w, r)
@@ -54,9 +55,51 @@ func (s *Session) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
+	case len(parts) == 2 && parts[0] == "subs" && strings.HasSuffix(parts[1], ".m3u8"):
+		if st := s.subtitleTrack(strings.TrimSuffix(parts[1], ".m3u8")); st != nil {
+			s.writeBody(w, r, contentTypePlaylist, []byte(s.mediaPlaylist(fmt.Sprintf("%d/", st.src.Number), false)))
+			return
+		}
+		http.NotFound(w, r)
+	case len(parts) == 3 && parts[0] == "subs":
+		if st := s.subtitleTrack(parts[1]); st != nil {
+			s.serveSubtitleSegment(w, r, st, parts[2])
+			return
+		}
+		http.NotFound(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Session) subtitleTrack(num string) *subtitleTrack {
+	n, err := strconv.ParseUint(num, 10, 64)
+	if err != nil {
+		return nil
+	}
+	for _, st := range s.subs {
+		if st.src.Number == n {
+			return st
+		}
+	}
+	return nil
+}
+
+// serveSubtitleSegment serves one WebVTT segment. Segments without cues are
+// still valid (header only).
+func (s *Session) serveSubtitleSegment(w http.ResponseWriter, r *http.Request, st *subtitleTrack, name string) {
+	i, err := strconv.Atoi(strings.TrimSuffix(name, subtitleSuffix))
+	if err != nil || !strings.HasSuffix(name, subtitleSuffix) || i < 0 || i >= len(s.segs) {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := s.cache.get(r.Context(), i)
+	if err != nil {
+		s.logf("transmux: segment %d: %v", i, err)
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	s.writeBody(w, r, contentTypeWebVTT, st.webVTT(data.other[st.src.Number]))
 }
 
 func (s *Session) audioTrack(num string) *audioTrack {
@@ -115,7 +158,7 @@ func (s *Session) serveTrackFile(w http.ResponseWriter, r *http.Request, audio *
 	if audio == nil {
 		frag = s.video.fragment(seq, data.video)
 	} else {
-		frames := data.audio[audio.src.Number]
+		frames := data.other[audio.src.Number]
 		if len(frames) == 0 {
 			// Audio can be absent from a stretch of the file, and an empty
 			// fragment is invalid, so report the gap.
@@ -152,6 +195,18 @@ func (s *Session) masterPlaylist() string {
 			codecs = append(codecs, a.codecs)
 		}
 	}
+	for _, st := range s.subs {
+		t := st.src
+		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=%q,NAME=%q,", subtitleGroupID, st.name)
+		if lang := hlsLanguage(t.Language); lang != "" {
+			fmt.Fprintf(&b, "LANGUAGE=%q,", lang)
+		}
+		forced := "NO"
+		if t.Forced {
+			forced = "YES"
+		}
+		fmt.Fprintf(&b, "DEFAULT=NO,AUTOSELECT=YES,FORCED=%s,URI=\"subs/%d.m3u8\"\n", forced, t.Number)
+	}
 	peak, avg := s.bandwidth()
 	fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,AVERAGE-BANDWIDTH=%d,CODECS=%q,RESOLUTION=%dx%d",
 		peak, avg, strings.Join(codecs, ","), s.video.width, s.video.height)
@@ -162,13 +217,17 @@ func (s *Session) masterPlaylist() string {
 	if len(s.audio) > 0 {
 		fmt.Fprintf(&b, ",AUDIO=%q", audioGroupID)
 	}
+	if len(s.subs) > 0 {
+		fmt.Fprintf(&b, ",SUBTITLES=%q", subtitleGroupID)
+	}
 	fmt.Fprintf(&b, "\n%s\n", videoPlaylist)
 	return b.String()
 }
 
 // mediaPlaylist lists every segment; prefix is the directory of the
-// segments relative to the playlist.
-func (s *Session) mediaPlaylist(prefix string) string {
+// segments relative to the playlist. fmp4 selects fMP4 segments with an init
+// segment; otherwise the segments are WebVTT.
+func (s *Session) mediaPlaylist(prefix string, fmp4 bool) string {
 	target := 1
 	for _, seg := range s.segs {
 		if d := int(math.Round((seg.End - seg.Start).Seconds())); d > target {
@@ -177,9 +236,14 @@ func (s *Session) mediaPlaylist(prefix string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "#EXTM3U\n#EXT-X-VERSION:%d\n#EXT-X-TARGETDURATION:%d\n#EXT-X-MEDIA-SEQUENCE:1\n", hlsVersion, target)
-	fmt.Fprintf(&b, "#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"%s%s\"\n", prefix, initSegment)
+	b.WriteString("#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n")
+	suffix := subtitleSuffix
+	if fmp4 {
+		fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s%s\"\n", prefix, initSegment)
+		suffix = segmentSuffix
+	}
 	for i, seg := range s.segs {
-		fmt.Fprintf(&b, "#EXTINF:%.6f,\n%s%d%s\n", (seg.End - seg.Start).Seconds(), prefix, i, segmentSuffix)
+		fmt.Fprintf(&b, "#EXTINF:%.6f,\n%s%d%s\n", (seg.End - seg.Start).Seconds(), prefix, i, suffix)
 	}
 	b.WriteString("#EXT-X-ENDLIST\n")
 	return b.String()

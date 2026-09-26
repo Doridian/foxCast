@@ -286,7 +286,7 @@ func TestRemoteSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	local, _ := newTestSession(t, "h264_aac.mkv", DefaultOptions())
-	if remote.masterPlaylist() != local.masterPlaylist() || remote.mediaPlaylist("") != local.mediaPlaylist("") {
+	if remote.masterPlaylist() != local.masterPlaylist() || remote.mediaPlaylist("", true) != local.mediaPlaylist("", true) {
 		t.Error("remote and local sources produce different playlists")
 	}
 	srv := httptest.NewServer(remote)

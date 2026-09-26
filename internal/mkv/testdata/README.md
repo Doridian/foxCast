@@ -20,6 +20,16 @@ ffmpeg -f lavfi -i testsrc2=size=64x64:rate=24 -f lavfi -i sine=frequency=300:sa
 mkvmerge -o hevc_multi.mkv --compression 1:analyze_header_removal raw2.mkv
 ```
 
+```sh
+# subs.mkv — h264_aac.mkv's video + an English SRT track (italics, <font>, &,
+#   non-ASCII) + a forced French ASS track (overrides, \N, a \p1 drawing)
+mkvmerge -o subs.mkv --no-audio h264_aac.mkv --language 0:eng en.srt \
+  --language 0:fre --forced-display-flag 0:1 fr.ass
+```
+
+The SRT/ASS sources are reproduced as expected cues in
+`internal/transmux/subtitles_test.go`.
+
 Reference frame counts (from `ffprobe -count_packets` on the pre-mkvmerge
 files): h264_aac 72 video / 131 audio; hevc_multi 48 video, 63 AC-3, 63 E-AC-3,
 94 FLAC, 101 Opus. The `dac3`/`dec3`/`dfLa`/`dOps` vectors in

@@ -83,6 +83,7 @@ type Session struct {
 	opts   Options
 	video  *videoTrack
 	audio  []*audioTrack
+	subs   []*subtitleTrack
 	segs   []segment
 	tracks map[uint64]bool
 	cache  *segmentCache
@@ -146,7 +147,7 @@ func NewSession(ctx context.Context, src mediasource.Source, opts Options) (*Ses
 		return nil, errors.New("no video keyframes found")
 	}
 	s.cache = newSegmentCache(opts.CachedSegments, s.loadSegment)
-	s.logf("transmux: %d segments, %d audio renditions", len(s.segs), len(s.audio))
+	s.logf("transmux: %d segments, %d audio and %d subtitle renditions", len(s.segs), len(s.audio), len(s.subs))
 	return s, nil
 }
 
@@ -222,6 +223,7 @@ func (s *Session) selectAudio() error {
 		s.notes = append(s.notes, "no audio track Apple TV can decode; playing video only")
 	}
 	s.nameRenditions()
+	s.selectSubtitles(status)
 
 	for _, t := range f.Tracks {
 		ts := TrackSummary{Number: t.Number, Type: t.Type.String(), Codec: t.CodecID, Language: t.Language, Name: t.Name}
@@ -233,14 +235,14 @@ func (s *Session) selectAudio() error {
 			ts.Status = "video"
 		case len(s.audio) > 0 && s.audio[0].src == t:
 			ts.Status = "default audio"
+		case s.tracks[t.Number] && t.Type == mkv.TrackSubtitle:
+			ts.Status = "subtitles (WebVTT)"
 		case s.tracks[t.Number]:
 			ts.Status = "audio"
 		case status[t.Number] != "":
 			ts.Status = "unused: " + status[t.Number]
 		case t.Type == mkv.TrackAudio && !audioCodecSupported(t.CodecID):
 			ts.Status = "unused: Apple TV cannot decode " + codecDisplayName(t.CodecID)
-		case t.Type == mkv.TrackSubtitle:
-			ts.Status = "unused: subtitles are not transmuxed"
 		default:
 			ts.Status = "unused"
 		}
@@ -286,6 +288,39 @@ func (s *Session) firstFrames(tracks []*mkv.Track) (map[uint64]*mkv.Frame, error
 	return out, nil
 }
 
+// selectSubtitles offers every enabled text subtitle track; status records
+// why others are skipped.
+func (s *Session) selectSubtitles(status map[uint64]string) {
+	seen := map[string]int{}
+	for _, t := range s.file.Tracks {
+		if t.Type != mkv.TrackSubtitle || !t.Enabled {
+			continue
+		}
+		st, err := newSubtitleTrack(t)
+		if err != nil {
+			status[t.Number] = err.Error()
+			continue
+		}
+		name := t.Name
+		if name == "" {
+			name = languageName(t.Language)
+			if name == "" {
+				name = fmt.Sprintf("Track %d", t.Number)
+			}
+			if t.Forced {
+				name += " (Forced)"
+			}
+		}
+		seen[name]++
+		if seen[name] > 1 {
+			name = fmt.Sprintf("%s %d", name, seen[name])
+		}
+		st.name = name
+		s.subs = append(s.subs, st)
+		s.tracks[t.Number] = true
+	}
+}
+
 // nameRenditions gives every audio rendition a unique display name.
 func (s *Session) nameRenditions() {
 	seen := map[string]int{}
@@ -322,7 +357,8 @@ func (s *Session) MasterPath() string { return "/" + masterPlaylist }
 // segmentData is the demuxed content of one segment.
 type segmentData struct {
 	video []*mkv.Frame
-	audio map[uint64][]*mkv.Frame
+	// other holds audio and subtitle frames by track number.
+	other map[uint64][]*mkv.Frame
 }
 
 func (s *Session) loadSegment(i int) (*segmentData, error) {
@@ -336,7 +372,7 @@ func (s *Session) loadSegment(i int) (*segmentData, error) {
 	cr := s.file.NewClusterReader(rc, seg.ByteStart)
 	cr.Tracks = s.tracks
 	cr.StopAt = seg.To
-	d := &segmentData{audio: map[uint64][]*mkv.Frame{}}
+	d := &segmentData{other: map[uint64][]*mkv.Frame{}}
 	videoNum := s.video.src.Number
 	for {
 		fr, err := cr.Next()
@@ -355,7 +391,7 @@ func (s *Session) loadSegment(i int) (*segmentData, error) {
 			}
 			d.video = append(d.video, fr)
 		} else {
-			d.audio[fr.Track] = append(d.audio[fr.Track], fr)
+			d.other[fr.Track] = append(d.other[fr.Track], fr)
 		}
 	}
 	if len(d.video) == 0 {

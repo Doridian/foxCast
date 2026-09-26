@@ -25,7 +25,7 @@ and the codec list in its *General Authoring Requirements*):
 |------|-----------|-----------------------------------------|
 | Video | H.264 (`avc1`), HEVC (`hvc1`, parameter sets in `hvcC`), Dolby Vision profile 5 and 8.x (`dvh1`) | VP9, AV1 (no hardware decoder before A17/M3; the AppleTV11,1 and AppleTV14,1 lack it), MPEG-2, VC-1, Dolby Vision profile 7 as such |
 | Audio | AAC-LC/HE-AAC (`mp4a.40.x`), AC-3 (`ac-3`), E-AC-3 incl. Atmos/JOC (`ec-3`), FLAC (`fLaC`), ALAC (`alac`); Opus and MP3 unverified (see below) | **Dolby TrueHD, DTS / DTS-HD**, LPCM, Vorbis |
-| Subtitles | WebVTT, IMSC1 (as HLS subtitle renditions) | PGS/VobSub (bitmap), SRT/ASS (need conversion to WebVTT) |
+| Subtitles | WebVTT, IMSC1 text (as HLS subtitle renditions); foxCast converts SRT and ASS/SSA to WebVTT | PGS/VobSub/DVB (bitmap) |
 
 AAC, AC-3/E-AC-3 and HEVC/DV are the long-standing, safest choices. Apple's
 spec does not list Opus for HLS, and documents MP3 for MPEG-TS segments only;
@@ -61,6 +61,7 @@ serve` serves the HLS presentation for testing with other players.
 /master.m3u8                                  multivariant playlist
 /video.m3u8   /video/init.mp4   /video/<n>.m4s
 /audio/<track>.m3u8   /audio/<track>/init.mp4   /audio/<track>/<n>.m4s
+/subs/<track>.m3u8    /subs/<track>/<n>.vtt
 ```
 
 Every compatible audio track becomes an `EXT-X-MEDIA` rendition in one group,
@@ -68,6 +69,29 @@ so the Apple TV's audio menu lists them all (`AUTOSELECT=YES` lets it follow
 the user's language preference). The variant's `CODECS` is the union of the
 video codec and all rendition codecs, which RFC 8216 §4.3.4.2 permits. Audio
 is demuxed from video (separate playlists), as Apple recommends.
+
+### Subtitles
+
+Text subtitle tracks (SRT `S_TEXT/UTF8`, ASS/SSA, WebVTT) become
+`EXT-X-MEDIA TYPE=SUBTITLES` renditions with WebVTT segments that share the
+video's segment boundaries; the variant carries `SUBTITLES="subs"`.
+Forced tracks get `FORCED=YES`, which tvOS shows automatically when the
+language matches the audio (verified on AppleTV11,1 / tvOS 27: the receiver
+fetched the `.vtt` segments of a forced English track unprompted).
+
+- Cues are collected by block position in the same segment read as audio, so
+  subtitles cost no extra source reads. A cue belongs to the segment its block
+  is in; one that runs past a segment boundary is not repeated in the next
+  segment, so starting playback in the middle of it does not show it.
+- Each segment starts `WEBVTT` + `X-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000`;
+  cue times are absolute, matching the fMP4 timeline (which starts at 0).
+- SRT: `<i>`, `<b>`, `<u>` are kept, other tags (e.g. `<font>`) dropped, the
+  rest escaped. ASS/SSA: the Text field of the block's Dialogue fields, with
+  override blocks removed except italic/bold, drawings (`\p1`) skipped and
+  `\N`/`\n` as line breaks. Positioning and styling are not carried.
+- Bitmap subtitles (PGS, VobSub, DVB) cannot be carried: Apple's HLS accepts
+  WebVTT and IMSC1 *text* only. They would need OCR, or burning into the
+  video (re-encoding).
 
 ### Opening a file (small reads only)
 
@@ -158,8 +182,7 @@ does) and is not implemented.
 
 ## Not (yet) supported
 
-- Subtitles: text tracks (SRT/ASS/WebVTT) could become WebVTT renditions; PGS
-  would need OCR or burning in.
+- Bitmap subtitles (PGS/VobSub/DVB), see above.
 - TrueHD/DTS audio: would need audio transcoding (e.g. to E-AC-3 or AAC). Most
   UHD/Blu-ray remuxes also carry an AC-3 track, which is offered instead.
 - Chapters, attachments, and video codecs other than H.264/HEVC.
