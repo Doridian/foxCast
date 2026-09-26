@@ -810,3 +810,44 @@ func TestDetectGstEncoderSelectionContract(t *testing.T) {
 		})
 	}
 }
+
+func TestWaylandCompositorStagesScaleBeforeCanvas(t *testing.T) {
+	// A 2x-scaled 3840x2160 output reports a 1920x1080 logical stream size
+	// while PipeWire delivers 3840x2160 frames.
+	for _, test := range []struct {
+		name                string
+		maxWidth, maxHeight int
+		want                []gstStage
+	}{
+		{
+			name:     "receiver canvas",
+			maxWidth: 1920, maxHeight: 1080,
+			want: []gstStage{
+				{"videoscale", "add-borders=true"},
+				{"video/x-raw,width=1920,height=1080,pixel-aspect-ratio=1/1"},
+				{"compositor", "force-live=true", "ignore-inactive-pads=true", "background=black"},
+				{"video/x-raw,width=1920,height=1080,framerate=30/1"},
+			},
+		},
+		{
+			name: "logical size fallback",
+			want: []gstStage{
+				{"videoscale", "add-borders=true"},
+				{"video/x-raw,width=1512,height=982,pixel-aspect-ratio=1/1"},
+				{"compositor", "force-live=true", "ignore-inactive-pads=true", "background=black"},
+				{"video/x-raw,width=1512,height=982,framerate=30/1"},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			streamSize := [2]int{1920, 1080}
+			if test.maxWidth == 0 {
+				streamSize = [2]int{1512, 982}
+			}
+			got := waylandCompositorStages(streamSize, test.maxWidth, test.maxHeight, 30)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("stages = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

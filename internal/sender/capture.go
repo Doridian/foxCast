@@ -783,6 +783,26 @@ func receiverScaleStages(maxWidth, maxHeight int) []gstStage {
 	}
 }
 
+// waylandCompositorStages fits portal frames to a fixed canvas and feeds the
+// idle-frame compositor. The portal's stream size is in logical pixels while
+// PipeWire delivers physical pixels, so on a scaled (HiDPI) output the frames
+// are larger than streamSize; an unscaled compositor pad would crop them to
+// the top-left corner. Scaling first makes the canvas independent of the
+// display scale. The receiver's canvas is preferred, with the logical stream
+// size as fallback, and the caller must skip the shared receiver scaling.
+func waylandCompositorStages(streamSize [2]int, maxWidth, maxHeight, fps int) []gstStage {
+	canvas := receiverScaleStages(maxWidth, maxHeight)
+	width, height := maxWidth&^1, maxHeight&^1
+	if canvas == nil {
+		canvas = receiverScaleStages(streamSize[0], streamSize[1])
+		width, height = streamSize[0]&^1, streamSize[1]&^1
+	}
+	return append(canvas,
+		gstStage{"compositor", "force-live=true", "ignore-inactive-pads=true", "background=black"},
+		gstStage{fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1", width, height, fps)},
+	)
+}
+
 // buildGstVideoPipeline joins source-specific stages to the one scaling,
 // encoding, and Annex-B output path used by Wayland, X11, and synthetic test
 // capture. beforeConvert and afterScale preserve the few ordering requirements
@@ -865,11 +885,11 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 	}
 
 	var afterScale []gstStage
+	maxWidth, maxHeight := cfg.MaxWidth, cfg.MaxHeight
 	if hasCompositor {
-		beforeConvert = append(beforeConvert,
-			gstStage{"compositor", "force-live=true", "ignore-inactive-pads=true", "background=black"},
-			gstStage{fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=%d/1", streamSize[0], streamSize[1], fps)},
-		)
+		beforeConvert = append(beforeConvert, waylandCompositorStages(streamSize, maxWidth, maxHeight, fps)...)
+		// The frames were already fitted to the compositor canvas.
+		maxWidth, maxHeight = 0, 0
 	} else {
 		log.Printf("[CAPTURE] idle-frame compositor unavailable; using portal frame timing")
 	}
@@ -882,7 +902,7 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 			lowLatencyVideoQueueStage(),
 		)
 	}
-	gstArgs := buildGstVideoPipeline(source, beforeConvert, afterScale, encoderParts, cfg.MaxWidth, cfg.MaxHeight, timestampedOutput)
+	gstArgs := buildGstVideoPipeline(source, beforeConvert, afterScale, encoderParts, maxWidth, maxHeight, timestampedOutput)
 
 	dbg("[CAPTURE] gst-launch-1.0 (wayland) %s", strings.Join(gstArgs, " "))
 	cmd := exec.CommandContext(captureCtx, "gst-launch-1.0", gstArgs...)
