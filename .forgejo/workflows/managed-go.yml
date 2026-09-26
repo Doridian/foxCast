@@ -9,7 +9,7 @@ on:
 
 jobs:
   check-go:
-    runs-on: ${{ vars.MANAGED_RUNNER_TAG || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.MANAGED_RUNNER_TAG || 'ubuntu-26.04' }}
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v7
       - uses: https://data.forgejo.org/actions/setup-go@v7
