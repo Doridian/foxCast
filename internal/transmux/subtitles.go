@@ -157,7 +157,7 @@ func srtToVTT(s string) string {
 			break
 		}
 		tag := strings.ToLower(s[lt+1 : lt+gt])
-		if tag == "" || !(tag[0] == '/' || (tag[0] >= 'a' && tag[0] <= 'z')) {
+		if tag == "" || (tag[0] != '/' && (tag[0] < 'a' || tag[0] > 'z')) {
 			// Not markup (e.g. "a < b"): keep the '<' as text.
 			b.WriteString("&lt;")
 			s = s[lt+1:]

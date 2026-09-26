@@ -874,16 +874,6 @@ func tlv8EncodeOrdered(items []tlv8Item) []byte {
 	return buf.Bytes()
 }
 
-// tlv8Encode encodes TLV8 items from a map (order not guaranteed).
-// Prefer tlv8EncodeOrdered for protocol messages.
-func tlv8Encode(items map[byte][]byte) []byte {
-	var ordered []tlv8Item
-	for tag, value := range items {
-		ordered = append(ordered, tlv8Item{Tag: tag, Value: value})
-	}
-	return tlv8EncodeOrdered(ordered)
-}
-
 func tlv8Decode(data []byte) map[byte][]byte {
 	result := make(map[byte][]byte)
 	for len(data) >= 2 {

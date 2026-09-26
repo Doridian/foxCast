@@ -164,9 +164,10 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 		kind:              kind,
 		timestampedOutput: supportsTimestampedVideoOutput(normalizeVideoCodec(validationCfg.VideoCodec)),
 	}
-	if cfg.VideoCodec == VideoCodecAuto {
+	switch cfg.VideoCodec {
+	case VideoCodecAuto:
 		preparation.automaticHEVCAvail, preparation.measuredVideoLatency = automaticHEVCProfile(cfg.HWAccel, cfg.FPS)
-	} else if cfg.VideoCodec == VideoCodecHEVC {
+	case VideoCodecHEVC:
 		// Forced NVENC HEVC uses the same local pipeline and benefits from the
 		// same scheduling calibration. Explicit software x265 remains a deliberate
 		// opt-in and can be tuned with the joint latency override.
@@ -230,9 +231,10 @@ func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrepara
 		kind:              capturePreparationTest,
 		timestampedOutput: supportsTimestampedVideoOutput(normalizeVideoCodec(validationCfg.VideoCodec)),
 	}
-	if cfg.VideoCodec == VideoCodecAuto {
+	switch cfg.VideoCodec {
+	case VideoCodecAuto:
 		preparation.automaticHEVCAvail, preparation.measuredVideoLatency = automaticHEVCProfile(cfg.HWAccel, cfg.FPS)
-	} else if cfg.VideoCodec == VideoCodecHEVC {
+	case VideoCodecHEVC:
 		_, preparation.measuredVideoLatency = automaticHEVCProfile(cfg.HWAccel, cfg.FPS)
 	}
 	if cfg.VideoCodec == VideoCodecHEVC && !preparation.timestampedOutput {
@@ -247,7 +249,10 @@ func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrepara
 // Start launches the prepared encoder using the supplied nominal receiver
 // canvas. Zero dimensions leave the captured source at its native size.
 func (p *CapturePreparation) Start(width, height int) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(nil, width, height, "")
+	if p == nil {
+		return nil, fmt.Errorf("capture preparation is nil")
+	}
+	return p.startWithContextAndCodec(p.ctx, width, height, "")
 }
 
 // StartWithContext is Start with an optional lifetime context for the launched
@@ -262,7 +267,10 @@ func (p *CapturePreparation) StartWithContext(lifetime context.Context, width, h
 // has selected one concrete codec. Explicit preparations accept only their
 // configured codec, preventing the capture and AirPlay framing from diverging.
 func (p *CapturePreparation) StartWithCodec(width, height int, codec VideoCodec) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(nil, width, height, codec)
+	if p == nil {
+		return nil, fmt.Errorf("capture preparation is nil")
+	}
+	return p.startWithContextAndCodec(p.ctx, width, height, codec)
 }
 
 // StartWithContextAndCodec combines StartWithContext and StartWithCodec for
@@ -665,11 +673,6 @@ func automaticHEVCProfile(hwaccel string, fps int) (bool, time.Duration) {
 		}
 	})
 	return result.ok, result.lead
-}
-
-func automaticHEVCAvailable(hwaccel string) bool {
-	ok, _ := automaticHEVCProfile(hwaccel, 30)
-	return ok
 }
 
 // startGStreamerCommand starts a capture child whose lifetime cannot outlive

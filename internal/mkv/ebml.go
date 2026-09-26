@@ -123,17 +123,6 @@ func readUint(b []byte) uint64 {
 	return v
 }
 
-func readInt(b []byte) int64 {
-	if len(b) == 0 {
-		return 0
-	}
-	v := int64(int8(b[0]))
-	for _, c := range b[1:] {
-		v = v<<8 | int64(c)
-	}
-	return v
-}
-
 func readFloat(b []byte) float64 {
 	switch len(b) {
 	case 4:

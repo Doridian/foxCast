@@ -265,9 +265,10 @@ func (r mirrorSetupRequest) sessionPlist() map[string]interface{} {
 		"model":                    "Linux",
 		"name":                     r.name,
 	}
-	if r.timingProtocol == timingProtocolNTP {
+	switch r.timingProtocol {
+	case timingProtocolNTP:
 		request["timingPort"] = int64(r.timingPort)
-	} else if r.timingProtocol == timingProtocolPTP {
+	case timingProtocolPTP:
 		peer := map[string]interface{}{
 			"ID":                                r.timingPeerID,
 			"SupportsClockPortMatchingOverride": true,
@@ -746,12 +747,12 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	}
 	// Create the audio stream after the control-first probe, or make it the first
 	// accepted request after a legacy-order rejection.
-	audioCT, audioSPF, audioFmt, latMin, latMax, _ := selectedAudioCodec.Info()
+	audioCT, audioSPF, audioFmt, _, _, _ := selectedAudioCodec.Info()
 	// Screen audio has no sender-side minimum latency. The maximum is the
 	// playout lead carried by TimeAnnounce; using that lead as the minimum too
 	// makes the receiver add it again when calculating its render offset.
-	latMin = 0
-	latMax = int64(audioLatencySamples)
+	latMin := int64(0)
+	latMax := int64(audioLatencySamples)
 	audioStreamBase := map[string]interface{}{
 		"type":               int64(96),
 		"streamConnectionID": audioStreamConnectionID,
@@ -814,9 +815,6 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		debugDumpPlist("alternate audio setup plist", audioSetupPlist)
 		debugDumpPlist("alternate audio stream descriptor", audioStreamDesc)
 		audioResp, audioRespHeaders, audioRespReceivedAt, err = sendSetup(audioURI, "audio stream alternate descriptor", audioSetupPlist)
-		if err == nil {
-			audioLayout = alternate
-		}
 	}
 	if err != nil {
 		return nil, err
@@ -949,8 +947,8 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		return nil, fmt.Errorf("connect data port %s: %w", dataAddr, err)
 	}
 	if tc, ok := dataConn.(*net.TCPConn); ok {
-		tc.SetNoDelay(true)
-		tc.SetWriteBuffer(64 * 1024)
+		_ = tc.SetNoDelay(true)
+		_ = tc.SetWriteBuffer(64 * 1024)
 	}
 	dbg("[SETUP] data channel connected: %s (TCP_NODELAY, sndbuf=64K)", dataAddr)
 
@@ -1483,11 +1481,7 @@ func (p *h264Parser) pushAnnexB() [][]byte {
 func (p *h264Parser) pushAVCC() [][]byte {
 	var out [][]byte
 
-	for {
-		if len(p.buf) < 4 {
-			break
-		}
-
+	for len(p.buf) >= 4 {
 		nalLen := int(binary.BigEndian.Uint32(p.buf[:4]))
 		if nalLen <= 0 || nalLen > 16*1024*1024 {
 			dbg("[STREAM] invalid AVCC NAL length %d, dropping %d buffered bytes", nalLen, len(p.buf))
@@ -1693,9 +1687,10 @@ func spsDimensions(sps []byte) (width, height int, ok bool) {
 
 	r.readUE() // log2_max_frame_num_minus4
 	picOrderCntType := r.readUE()
-	if picOrderCntType == 0 {
+	switch picOrderCntType {
+	case 0:
 		r.readUE() // log2_max_pic_order_cnt_lsb_minus4
-	} else if picOrderCntType == 1 {
+	case 1:
 		r.readBit() // delta_pic_order_always_zero_flag
 		r.readSE()  // offset_for_non_ref_pic
 		r.readSE()  // offset_for_top_to_bottom_field
@@ -1827,7 +1822,7 @@ func (s *MirrorSession) sendCodecFrame(payload []byte, ntpTimestamp uint64, code
 
 	bufs := net.Buffers{header[:], payload}
 	s.dataMu.Lock()
-	s.dataConn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_ = s.dataConn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 	_, err := bufs.WriteTo(s.dataConn)
 	s.dataMu.Unlock()
 	return err
@@ -1905,7 +1900,7 @@ func (s *MirrorSession) sendFrame(auData []byte, isKeyframe bool, networkTimesta
 	bufs := net.Buffers{header[:], framePayload}
 	writeStarted := time.Now()
 	s.dataMu.Lock()
-	s.dataConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_ = s.dataConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	_, err := bufs.WriteTo(s.dataConn)
 	writeEnded := time.Now()
 	reportSlowWrite := writeEnded.Sub(writeStarted) >= 25*time.Millisecond &&
@@ -1945,12 +1940,12 @@ func putFloat32LE(dst []byte, value float32) {
 // Per UxPlay mirror_buffer.c: SHA-512("AirPlayStreamKey<id>" + shk)[:16] and SHA-512("AirPlayStreamIV<id>" + shk)[:16].
 func deriveVideoKeys(shk []byte, streamConnectionID int64) (key, iv []byte) {
 	h := sha512.New()
-	h.Write([]byte(fmt.Sprintf("AirPlayStreamKey%d", uint64(streamConnectionID))))
+	_, _ = fmt.Fprintf(h, "AirPlayStreamKey%d", uint64(streamConnectionID))
 	h.Write(shk)
 	key = h.Sum(nil)[:16]
 
 	h.Reset()
-	h.Write([]byte(fmt.Sprintf("AirPlayStreamIV%d", uint64(streamConnectionID))))
+	_, _ = fmt.Fprintf(h, "AirPlayStreamIV%d", uint64(streamConnectionID))
 	h.Write(shk)
 	iv = h.Sum(nil)[:16]
 	return
@@ -2012,7 +2007,7 @@ func (s *MirrorSession) dataHeartbeatLoop(ctx context.Context) {
 			header[4] = 0x02
 			header[6] = 0x1e
 			s.dataMu.Lock()
-			s.dataConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_ = s.dataConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			err := writeAll(s.dataConn, header)
 			s.dataMu.Unlock()
 			if err != nil {
@@ -2220,7 +2215,7 @@ func ntpTimingResponder(ctx context.Context, conn net.PacketConn) {
 			return
 		default:
 		}
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -2468,13 +2463,8 @@ func compactTimestamp(d time.Duration) uint64 {
 	return (sec << 32) | frac
 }
 
-// allocateConsecutiveUDPPorts allocates `count` consecutive UDP port numbers.
-// Real Apple AirPlay senders use consecutive ports: timing(N), control(N+1), data(N+2).
-func allocateConsecutiveUDPPorts(count int) ([]net.PacketConn, error) {
-	return allocateConsecutiveUDPPortsInRange(count, 0, 0)
-}
-
 // allocateConsecutiveUDPPortsInRange allocates `count` consecutive UDP ports.
+// Real Apple AirPlay senders use consecutive ports: timing(N), control(N+1), data(N+2).
 // When portMin/portMax are zero, the OS picks ephemeral ports. Otherwise the
 // search is limited to [portMin, portMax] inclusive.
 func allocateConsecutiveUDPPortsInRange(count, portMin, portMax int) ([]net.PacketConn, error) {

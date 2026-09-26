@@ -113,7 +113,7 @@ func newVideoTrack(t *mkv.Track, opts Options) (*videoTrack, error) {
 			// Dual-layer profile 7 (or DV disabled): play the base layer. It
 			// is HDR10/SDR/HLG on its own; drop RPU and enhancement-layer NALs.
 			if dv.Profile == dvProfile5 {
-				return nil, fmt.Errorf("Dolby Vision profile 5 has no backward-compatible base layer; enable Dolby Vision")
+				return nil, fmt.Errorf("video uses Dolby Vision profile 5, which has no backward-compatible base layer; enable Dolby Vision")
 			}
 			lengthSize := cfg.LengthSize
 			v.filter = func(b []byte) []byte { return codec.FilterNALs(b, lengthSize, codec.IsDolbyVisionNAL) }

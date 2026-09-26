@@ -161,7 +161,7 @@ func parseHEVCSPSColor(nal []byte) (ColorInfo, error) {
 	for i := 0; i < 6; i++ {
 		r.ue() // block sizes and transform hierarchy depths
 	}
-	if r.flag() && r.flag() { // scaling_list_enabled && sps_scaling_list_data_present
+	if scalingListEnabled := r.flag(); scalingListEnabled && r.flag() { // sps_scaling_list_data_present
 		skipHEVCScalingList(r)
 	}
 	r.skip(2)     // amp, sao

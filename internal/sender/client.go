@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -951,8 +950,8 @@ func (c *AirPlayClient) readHTTPResponseWithTimeout(timeout time.Duration) ([]by
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	c.conn.SetReadDeadline(time.Now().Add(timeout))
-	defer c.conn.SetReadDeadline(time.Time{})
+	_ = c.conn.SetReadDeadline(time.Now().Add(timeout))
+	defer func() { _ = c.conn.SetReadDeadline(time.Time{}) }()
 
 	if c.encrypted {
 		dbg("[READ] reading encrypted response (readKey=%s, readNonce=%d)", hex.EncodeToString(c.encReadKey[:8]), c.encReadNonce)
@@ -1098,9 +1097,9 @@ func (c *AirPlayClient) readEncryptedHTTPResponse() ([]byte, map[string]string, 
 
 func parseHTTPHeader(header string) (statusCode, contentLength int, headers map[string]string) {
 	headers = make(map[string]string)
-	fmt.Sscanf(header, "HTTP/1.1 %d", &statusCode)
+	_, _ = fmt.Sscanf(header, "HTTP/1.1 %d", &statusCode)
 	if statusCode == 0 {
-		fmt.Sscanf(header, "RTSP/1.0 %d", &statusCode)
+		_, _ = fmt.Sscanf(header, "RTSP/1.0 %d", &statusCode)
 	}
 
 	for _, line := range strings.Split(header, "\r\n") {
@@ -1115,7 +1114,7 @@ func parseHTTPHeader(header string) (statusCode, contentLength int, headers map[
 		}
 		headers[key] = value
 		if key == "content-length" {
-			fmt.Sscanf(value, "%d", &contentLength)
+			_, _ = fmt.Sscanf(value, "%d", &contentLength)
 		}
 	}
 	return
@@ -1207,19 +1206,6 @@ func (c *AirPlayClient) readEncryptedFrame() ([]byte, error) {
 	return plaintext, nil
 }
 
-// readDecryptedBytes reads and decrypts enough bytes from the encrypted channel.
-func (c *AirPlayClient) readDecryptedBytes(n int) ([]byte, error) {
-	var buf []byte
-	for len(buf) < n {
-		frame, err := c.readEncryptedFrame()
-		if err != nil {
-			return nil, err
-		}
-		buf = append(buf, frame...)
-	}
-	return buf[:n], nil
-}
-
 // StreamConfig holds the configuration for a mirroring session.
 type StreamConfig struct {
 	FPS                    int
@@ -1237,28 +1223,6 @@ type StreamConfig struct {
 	// are zero the OS chooses ephemeral ports.
 	PortMin int
 	PortMax int
-}
-
-// generateStreamKey creates a random AES-128 key for stream encryption.
-func generateStreamKey() (key, iv []byte, err error) {
-	key = make([]byte, 16)
-	iv = make([]byte, 16)
-	if _, err = rand.Read(key); err != nil {
-		return nil, nil, err
-	}
-	if _, err = rand.Read(iv); err != nil {
-		return nil, nil, err
-	}
-	return key, iv, nil
-}
-
-// newStreamCipher creates an AES-CTR cipher for stream encryption.
-func newStreamCipher(key, iv []byte) (cipher.Stream, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewCTR(block, iv), nil
 }
 
 // mirrorCipher implements the AirPlay mirroring AES-CTR encryption scheme

@@ -30,7 +30,7 @@ func TestReadResponseRejectsHostileContentLength(t *testing.T) {
 			defer server.Close()
 
 			go func() {
-				server.Write([]byte("RTSP/1.0 200 OK\r\n" + tc.header + "\r\n\r\n"))
+				_, _ = server.Write([]byte("RTSP/1.0 200 OK\r\n" + tc.header + "\r\n\r\n"))
 				time.Sleep(time.Second)
 			}()
 
@@ -69,7 +69,7 @@ func TestReadResponseAcceptsValidContentLength(t *testing.T) {
 	defer server.Close()
 
 	go func() {
-		server.Write([]byte("RTSP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello"))
+		_, _ = server.Write([]byte("RTSP/1.0 200 OK\r\nContent-Length: 5\r\n\r\nhello"))
 		time.Sleep(time.Second)
 	}()
 

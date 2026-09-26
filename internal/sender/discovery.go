@@ -354,14 +354,6 @@ const (
 	FeatureSystemPairing       uint64 = 1 << 43
 	FeatureTransientPairing    uint64 = 1 << 48
 	FeatureUDPMirroring        uint64 = 1 << 49
-
-	// Apple defines the CoreUtils mask from bits 38/43/46/48 and identifies
-	// third-party implementations with bits 26/51. Apple's own CoreUtils test
-	// does not subtract the latter; doing so here is an empirical initial-probe
-	// choice for receivers which copy the modern bits but implement HKP. The
-	// bounded pairing fallback still lets the wire exchange determine the result.
-	featureThirdPartyReceiverMask = uint64(1<<26 | 1<<51)
-	featureCoreUtilsPairingMask   = uint64(1<<38 | 1<<43 | 1<<46 | 1<<48)
 )
 
 func (d *AirPlayDevice) SupportsScreen() bool {

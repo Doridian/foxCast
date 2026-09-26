@@ -379,7 +379,7 @@ func (f *File) loadAt(off int64) (element, int64, error) {
 		return element{}, 0, fmt.Errorf("mkv: element 0x%X at %d too large to load", id, off)
 	}
 	data := make([]byte, size)
-	if _, err := f.r.ReadAt(data, off+int64(hlen)); err != nil && !(errors.Is(err, io.EOF) && size == 0) {
+	if _, err := f.r.ReadAt(data, off+int64(hlen)); err != nil && (!errors.Is(err, io.EOF) || size != 0) {
 		return element{}, 0, err
 	}
 	return element{id: id, data: data}, int64(hlen) + size, nil

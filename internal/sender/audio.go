@@ -229,8 +229,9 @@ func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec
 	}
 	if codec == AudioCodecAACELD {
 		var err error
-		ac.eld, err = newELDEncoder()
-		if err != nil {
+		// The !fdk_aac stub always fails, which staticcheck flags as SA4023.
+		ac.eld, err = newELDEncoder() //nolint:staticcheck
+		if err != nil {               //nolint:staticcheck
 			cancel()
 			return nil, err
 		}
@@ -396,13 +397,13 @@ func (ac *AudioCapture) Stop() {
 		ac.pcmPipe.Close()
 	}
 	if ac.gstCmd != nil && ac.gstCmd.Process != nil {
-		ac.gstCmd.Process.Kill()
+		_ = ac.gstCmd.Process.Kill()
 	}
 	select {
 	case <-ac.waitCh:
 	case <-time.After(2 * time.Second):
 		if ac.gstCmd != nil && ac.gstCmd.Process != nil {
-			ac.gstCmd.Process.Kill()
+			_ = ac.gstCmd.Process.Kill()
 		}
 		<-ac.waitCh
 	}
@@ -1003,7 +1004,7 @@ func (s *MirrorSession) audioClockAt(local time.Time) (timestamp, timelineID uin
 			return timestamp, timelineID
 		}
 	}
-	if presentation, ok := addDurationToBootTime(local.Sub(time.Now())); ok {
+	if presentation, ok := addDurationToBootTime(time.Until(local)); ok {
 		return compactTimestamp(presentation) + (uint64(secondsFrom1900To1970) << 32), 0
 	}
 	return s.audioClockNow()

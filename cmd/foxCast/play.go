@@ -176,7 +176,7 @@ func cmdPlay(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("file server: %w", err)
 		}
-		defer srv.Shutdown()
+		defer func() { _ = srv.Shutdown() }()
 		url, err = srv.URL(conn.addr, m.urlPath)
 		if err != nil {
 			return fmt.Errorf("file URL: %w", err)
