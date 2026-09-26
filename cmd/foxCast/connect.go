@@ -99,6 +99,10 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		return nil, fmt.Errorf("load credentials: %w", err)
 	}
 
+	// A receiver's configured password is saved alongside its pairing, so it
+	// is only prompted for once. -code overrides it; -pair ignores it so a
+	// changed password can be re-entered.
+	var saved *sender.SavedCredentials
 	credential := o.code
 	newClient := func() *sender.AirPlayClient {
 		if advertisement != nil {
@@ -138,6 +142,14 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 	}()
 	log.Printf("connected to: %s (model: %s)", c.info.Name, c.info.Model)
 
+	if !o.forcePair {
+		saved = store.Lookup(c.info.DeviceID)
+	}
+	if credential == "" && saved != nil && saved.Password != "" {
+		log.Printf("using saved receiver password (%s)", o.credBackend)
+		credential = saved.Password
+		c.client.SetPassword(credential)
+	}
 	if credential == "" && c.info.RequiresPassword() {
 		credential = readCredential("Enter the receiver's configured password: ")
 		if credential == "" {
@@ -229,10 +241,6 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		return pairWithCredential(false)
 	}
 
-	var saved *sender.SavedCredentials
-	if !o.forcePair {
-		saved = store.Lookup(c.info.DeviceID)
-	}
 	switch {
 	case o.forcePair && c.info.RequiresPassword() && c.info.RequiredPairingCredential() == sender.PairingCredentialNone:
 		// A modern receiver's playback password belongs only to HTTP Digest;
@@ -265,6 +273,10 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		}
 	}
 	log.Println("pairing complete")
+	// Only a configured password is worth keeping; a one-time PIN is not.
+	if c.info.RequiresPassword() && (saved == nil || saved.Password != credential) {
+		c.savePassword(credential)
+	}
 
 	if fairPlay && c.client.FpEkey == nil {
 		if err := c.client.FairPlaySetup(ctx); err != nil {
@@ -279,6 +291,19 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 
 	ok = true
 	return c, nil
+}
+
+// savePassword stores the receiver's configured password so later launches
+// need not prompt for it.
+func (c *connection) savePassword(password string) {
+	if password == "" {
+		return
+	}
+	if err := c.store.SavePassword(c.info.DeviceID, password); err != nil {
+		log.Printf("warning: failed to save receiver password: %v", err)
+	} else {
+		log.Println("receiver password saved")
+	}
 }
 
 func (c *connection) Close() error {

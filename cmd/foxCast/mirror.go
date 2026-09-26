@@ -160,6 +160,9 @@ func cmdMirror(ctx context.Context, args []string) error {
 			streamCfg.VideoCodec = startedCodec
 		}
 		session, err = conn.client.SetupMirrorWithCalibratedVideoPreparation(ctx, streamCfg, prepareVideo)
+		if err == nil {
+			conn.savePassword(credential)
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("mirror setup: %w", err)

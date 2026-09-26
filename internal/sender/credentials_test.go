@@ -60,6 +60,39 @@ func TestCredentialStoreSaveRestoreTokenPreservesPairingCredentials(t *testing.T
 	}
 }
 
+func TestCredentialStorePasswordSurvivesRepairingAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	store, err := NewCredentialStore(path)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+	if err := store.SavePassword("device-1", "hunter2 with spaces"); err != nil {
+		t.Fatalf("SavePassword: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := store.SavePairing("device-1", "pair-1", pub, priv, PairingProtocolHAP); err != nil {
+		t.Fatalf("SavePairing: %v", err)
+	}
+	if err := store.SavePassword("device-1", ""); err != nil {
+		t.Fatalf("SavePassword empty: %v", err)
+	}
+
+	reloaded, err := NewCredentialStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	creds := reloaded.Lookup("device-1")
+	if creds == nil || !creds.HasPairingCredentials() {
+		t.Fatalf("Lookup = %+v, want pairing credentials", creds)
+	}
+	if creds.Password != "hunter2 with spaces" {
+		t.Fatalf("Password = %q, want %q", creds.Password, "hunter2 with spaces")
+	}
+}
+
 func TestCredentialStoreSaveRestoreTokenCreatesTokenOnlyEntry(t *testing.T) {
 	store, err := NewCredentialStore(filepath.Join(t.TempDir(), "credentials.json"))
 	if err != nil {

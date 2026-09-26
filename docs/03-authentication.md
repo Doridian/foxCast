@@ -211,6 +211,7 @@ The SRP password and flow are not consistent across implementations:
 
 foxCast tries the configured password first, then `""`, then `"3939"` (`sender.TransientSetupCodes`), on a fresh connection per attempt. A non-empty code uses the M4-only flow; the empty code keeps doubletake's full flow.
 
+Because transient pairing stores no keys, a password-protected receiver needs its password on every connection. The CLI saves it in the receiver's credential entry (`password`, next to the pairing keys) once pairing succeeds, or once a mirror SETUP that challenged for it succeeds, and reuses it on later launches. `-code`/`$FOXCAST_CODE` overrides the saved value; `-pair` ignores it so a changed password can be re-entered. One-time on-screen PINs are never saved.
 
 ---
 

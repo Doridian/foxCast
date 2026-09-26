@@ -9,14 +9,19 @@ import (
 	"sync"
 )
 
-// SavedCredentials holds the persistent pairing credentials and optional
-// screencast restore state for a single device.
+// SavedCredentials holds the persistent pairing credentials, the receiver's
+// configured password, and optional screencast restore state for a single
+// device.
 type SavedCredentials struct {
 	PairingID       string          `json:"pairing_id"`
 	Ed25519Public   []byte          `json:"ed25519_public"`
 	Ed25519Seed     []byte          `json:"ed25519_seed"` // 32-byte seed (private key is derived from this)
 	PairingProtocol PairingProtocol `json:"pairing_protocol,omitempty"`
-	RestoreToken    string          `json:"restore_token,omitempty"`
+	// Password is the receiver's configured playback password ("Require
+	// Password"), used for HTTP Digest and password-keyed transient pairing.
+	// One-time on-screen PINs are never stored.
+	Password     string `json:"password,omitempty"`
+	RestoreToken string `json:"restore_token,omitempty"`
 }
 
 // PairingProtocol is the pair-verify wire protocol negotiated when credentials
@@ -170,6 +175,27 @@ func (cs *CredentialStore) savePairing(deviceID string, pairingID string, pub ed
 	if protocol != PairingProtocolUnknown {
 		creds.PairingProtocol = protocol
 	}
+	return cs.backend.Save(deviceID, creds)
+}
+
+// SavePassword stores the receiver's configured password for a device. An
+// empty password is ignored.
+func (cs *CredentialStore) SavePassword(deviceID, password string) error {
+	if password == "" {
+		return nil
+	}
+
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	creds, err := cs.backend.Lookup(deviceID)
+	if err != nil {
+		return err
+	}
+	if creds == nil {
+		creds = &SavedCredentials{}
+	}
+	creds.Password = password
 	return cs.backend.Save(deviceID, creds)
 }
 
