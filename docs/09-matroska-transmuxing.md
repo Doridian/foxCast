@@ -25,7 +25,7 @@ and the codec list in its *General Authoring Requirements*):
 |------|-----------|-----------------------------------------|
 | Video | H.264 (`avc1`), HEVC (`hvc1`, parameter sets in `hvcC`), Dolby Vision profile 5 and 8.x (`dvh1`) | VP9, AV1 (no hardware decoder before A17/M3; the AppleTV11,1 and AppleTV14,1 lack it), MPEG-2, VC-1, Dolby Vision profile 7 as such |
 | Audio | AAC-LC/HE-AAC (`mp4a.40.x`), AC-3 (`ac-3`), E-AC-3 incl. Atmos/JOC (`ec-3`), FLAC (`fLaC`), ALAC (`alac`); Opus and MP3 unverified (see below) | **Dolby TrueHD, DTS / DTS-HD**, LPCM, Vorbis |
-| Subtitles | WebVTT, IMSC1 text (as HLS subtitle renditions); foxCast converts SRT and ASS/SSA to WebVTT | PGS/VobSub/DVB (bitmap) |
+| Subtitles | WebVTT, IMSC1 text (as HLS subtitle renditions); foxCast converts SRT and ASS/SSA to WebVTT | PGS/VobSub/DVB (bitmap); IMSC1 image profile (verified: the receiver rejects the presentation) |
 
 AAC, AC-3/E-AC-3 and HEVC/DV are the long-standing, safest choices. Apple's
 spec does not list Opus for HLS, and documents MP3 for MPEG-TS segments only;
@@ -89,9 +89,15 @@ fetched the `.vtt` segments of a forced English track unprompted).
   rest escaped. ASS/SSA: the Text field of the block's Dialogue fields, with
   override blocks removed except italic/bold, drawings (`\p1`) skipped and
   `\N`/`\n` as line breaks. Positioning and styling are not carried.
-- Bitmap subtitles (PGS, VobSub, DVB) cannot be carried: Apple's HLS accepts
-  WebVTT and IMSC1 *text* only. They would need OCR, or burning into the
-  video (re-encoding).
+- **Bitmap subtitles (PGS, VobSub, DVB) are not supported.** Apple's HLS
+  accepts WebVTT and IMSC1 *text profile* (`stpp.ttml.im1t`) only. Tested on
+  AppleTV11,1 / tvOS 27 (2026-09-25) with the same HLS stream carrying one
+  forced IMSC1 subtitle rendition in fMP4 (`stpp`): declared as
+  `stpp.ttml.im1t` it plays; declared as `stpp.ttml.im1i` (image profile,
+  PNG in `smpte:image`) the receiver reads the playlists and abandons the
+  whole presentation, so image subtitles cannot even be offered alongside
+  video. PGS would need OCR to text, or burning into the video
+  (re-encoding), neither of which foxCast does.
 
 ### Opening a file (small reads only)
 

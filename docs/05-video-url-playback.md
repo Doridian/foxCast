@@ -31,6 +31,11 @@ name: …}` with names such as `currentItemChanged`, `timeJumped`,
 `itemPlayedToEnd`. foxCast falls back to the flow below when the PTP SETUP or
 the remote control SETUP is rejected.
 
+A multivariant playlist without `FRAME-RATE`/`AVERAGE-BANDWIDTH` and with
+`BANDWIDTH=80000000` for a 4K HDR HEVC variant was fetched but never played
+(tvOS 27); the same variant with `FRAME-RATE=23.976`, `AVERAGE-BANDWIDTH`
+and a measured `BANDWIDTH` played. foxCast's transmuxer always sets all three.
+
 The receiver connects back to the sender (UDP timing port for NTP sessions,
 and the HTTP server for local/transmuxed media), so a host firewall must allow
 them: `-port-range` and `-http-port` pin the ports.
