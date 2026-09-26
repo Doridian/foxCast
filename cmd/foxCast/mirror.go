@@ -33,6 +33,8 @@ func cmdMirror(ctx context.Context, args []string) error {
 	noEncrypt := flags.Bool("no-encrypt", false, "disable RTSP header encryption (debugging only)")
 	directKey := flags.Bool("direct-key", false, "use shk/shiv directly without SHA-512 derivation")
 	noAudio := flags.Bool("no-audio", false, "disable audio streaming")
+	audioSource := flags.String("audio-source", audioSourceSink, "audio to forward: \"sink\" (a virtual output device for this receiver), \"monitor\" (whatever the default output plays), or a PulseAudio source name")
+	keepDefaultSink := flags.Bool("keep-default-sink", false, "with -audio-source sink, do not make the virtual output device the default")
 	x11WindowID := flags.String("x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
 	x11WindowName := flags.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
 	noCursor := flags.Bool("no-cursor", false, "hide the mouse cursor in the captured video")
@@ -180,7 +182,12 @@ func cmdMirror(ctx context.Context, args []string) error {
 	}()
 
 	if !*noAudio && session.HasAudio() {
-		audioCapture, err := sender.StartAudioCapture(ctx, *testMode, session.AudioCodec())
+		source, closeSource, err := openAudioSource(*audioSource, *testMode, !*keepDefaultSink, conn.info)
+		var audioCapture *sender.AudioCapture
+		if err == nil {
+			defer closeSource()
+			audioCapture, err = sender.StartAudioCapture(ctx, source, session.AudioCodec())
+		}
 		if err != nil {
 			log.Printf("warning: audio capture failed: %v (continuing without audio)", err)
 		} else {
@@ -214,4 +221,40 @@ func parseXID(s string) (uint64, error) {
 		return 0, nil
 	}
 	return strconv.ParseUint(s, 0, 64) // decimal or 0xhex
+}
+
+const (
+	audioSourceSink    = "sink"
+	audioSourceMonitor = "monitor"
+)
+
+// openAudioSource resolves -audio-source. For "sink" it creates the virtual
+// output device, which lives until the returned close function runs.
+func openAudioSource(mode string, testTone, makeDefault bool, info *sender.ReceiverInfo) (sender.AudioSource, func(), error) {
+	switch {
+	case testTone:
+		return sender.AudioSource{TestTone: true}, func() {}, nil
+	case mode == audioSourceMonitor:
+		return sender.AudioSource{}, func() {}, nil
+	case mode != audioSourceSink:
+		return sender.AudioSource{Device: mode}, func() {}, nil
+	}
+	name, description := sender.VirtualSinkName(info.DeviceID), info.Name
+	if description == "" {
+		description = info.DeviceID
+	}
+	sink, err := sender.CreateVirtualSink(name, description+" (foxCast)", makeDefault)
+	if err != nil {
+		return sender.AudioSource{}, nil, fmt.Errorf("create audio output device (use -audio-source monitor to forward the default output instead): %w", err)
+	}
+	if makeDefault {
+		log.Printf("audio output switched to %q while mirroring", description+" (foxCast)")
+	} else {
+		log.Printf("audio output device %q created; route applications to it to hear them on the receiver", description+" (foxCast)")
+	}
+	return sender.AudioSource{Device: sink.MonitorSource()}, func() {
+		if err := sink.Close(); err != nil {
+			log.Printf("warning: %v", err)
+		}
+	}, nil
 }

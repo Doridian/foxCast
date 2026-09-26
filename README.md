@@ -27,6 +27,8 @@ foxCast play  -target 10.0.0.5 /mnt/nas/movie.mkv # MKV: remuxed to HLS on the f
 foxCast play  -target 10.0.0.5 https://nas.example/movie.mkv  # needs HTTP Range support
 foxCast probe /mnt/nas/movie.mkv                  # show which tracks will play
 foxCast mirror -target 10.0.0.5                   # screen sharing (needs GStreamer)
+                                                  # audio: adds a "<receiver> (foxCast)" output device
+                                                  # and makes it the default while mirroring
 foxCast mirror -target 10.0.0.5 -test -no-audio   # synthetic source
 ```
 

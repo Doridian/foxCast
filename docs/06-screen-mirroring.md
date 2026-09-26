@@ -129,6 +129,32 @@ AES-128-CTR decryption does not change payload size.
 - Transported as standard RAOP audio (UDP RTP, type 96)
 - Same ChaCha20-Poly1305 encryption as standalone audio streams
 - Set up in the same SETUP request as the video stream (type 110)
+- The codec follows `supportedFormats.screenStream`: ALAC (`0x40000`) when the
+  receiver lists it, else AAC-ELD (`0x1000000`, needs the `fdk_aac` build).
+  AppleTV11,1 on tvOS 27 advertises `0x1440000` and gets ALAC.
+
+### Sender-side capture (foxCast)
+
+By default `mirror` creates an output device for the receiver, a
+`module-null-sink` named `foxcast_<device id>` and described as
+"<receiver name> (foxCast)". It is loaded with `pactl`, which covers both
+PulseAudio and pipewire-pulse. The sink is 44.1 kHz stereo so no resampling
+happens before encoding. Its monitor source is recorded with `pulsesrc`.
+
+- The sink becomes the default output while mirroring, like macOS routing
+  system audio to the TV. On exit the previous default is restored first,
+  then the module is unloaded, so streams move back to the previous device
+  and not to a fallback the sound server picks. `-keep-default-sink` keeps
+  the default output unchanged; apps then have to be routed to the device
+  by hand.
+- A killed session leaves the module loaded. The next run unloads any
+  `module-null-sink` that has the same `sink_name` before loading a new one.
+- `-audio-source monitor` records the default output's monitor (the old
+  behaviour, where audio also plays locally). Any other value is taken as a
+  PulseAudio source name.
+- A PipeWire-native sink (`pipewiresrc` with `media.class=Audio/Sink`)
+  registers and links, but on GStreamer 1.28 / PipeWire 1.6 it delivered only
+  a few thousand silent samples. It is not used.
 
 ---
 

@@ -174,10 +174,19 @@ func audioCapturePipelineArgs(srcArgs []string, codec AudioCodec, timestamped bo
 	return append(args, "!", "fdsink", "fd=1", "sync=false", "async=false")
 }
 
+// AudioSource selects what StartAudioCapture records.
+type AudioSource struct {
+	// TestTone replaces capture with a 440 Hz sine wave.
+	TestTone bool
+	// Device is the PulseAudio source to record, such as a VirtualSink's
+	// monitor. Empty records the monitor of the current default sink.
+	Device string
+}
+
 // StartAudioCapture launches a pipeline that captures system audio (monitor source)
 // and feeds raw PCM into the encoder negotiated by SETUP. ALAC is built in;
 // AAC-ELD is available in builds made with -tags fdk_aac and libfdk-aac.
-func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*AudioCapture, error) {
+func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec) (*AudioCapture, error) {
 	captureCtx, cancel := context.WithCancel(ctx)
 	if codec != AudioCodecALAC && codec != AudioCodecAACELD {
 		cancel()
@@ -187,19 +196,25 @@ func StartAudioCapture(ctx context.Context, testTone bool, codec AudioCodec) (*A
 
 	// Detect audio source
 	var srcArgs []string
-	if testTone {
+	if source.TestTone {
 		srcArgs = []string{"audiotestsrc", "wave=sine", "freq=440", "is-live=true",
 			fmt.Sprintf("samplesperbuffer=%d", codecSPF)}
 		dbg("[AUDIO] using test tone (440 Hz sine wave, live, spf=%d)", codecSPF)
-	} else if exec.Command("gst-inspect-1.0", "pulsesrc").Run() == nil {
-		monitor := detectPulseMonitor()
-		if monitor == "" {
+	} else if hasGstElement("pulsesrc") {
+		device := source.Device
+		if device == "" {
+			device = detectPulseMonitor()
+		}
+		if device == "" {
 			cancel()
 			return nil, fmt.Errorf("no PulseAudio monitor source found")
 		}
-		srcArgs = []string{"pulsesrc", fmt.Sprintf("device=%s", monitor)}
-		dbg("[AUDIO] using pulsesrc device=%s", monitor)
-	} else if exec.Command("gst-inspect-1.0", "pipewiresrc").Run() == nil {
+		srcArgs = []string{"pulsesrc", fmt.Sprintf("device=%s", device)}
+		dbg("[AUDIO] using pulsesrc device=%s", device)
+	} else if source.Device != "" {
+		cancel()
+		return nil, fmt.Errorf("recording audio source %q requires GStreamer pulsesrc", source.Device)
+	} else if hasGstElement("pipewiresrc") {
 		srcArgs = []string{"pipewiresrc"}
 		dbg("[AUDIO] using pipewiresrc")
 	} else {
