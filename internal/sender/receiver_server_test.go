@@ -772,6 +772,47 @@ func TestReceiverServerCombinedCodePairsAndAnswersDigest(t *testing.T) {
 	}
 }
 
+func TestReceiverServerPasswordKeyedTransientPairingEndsAtM4(t *testing.T) {
+	const code = "XiYo8bk8"
+	server, client, ctx := newReceiverServerTestPair(t, ReceiverConfig{
+		Profile: ReceiverProfileModern,
+		Auth:    ReceiverAuthCombined,
+		Code:    code,
+	})
+	client.SetPassword(code)
+
+	if err := client.PairTransientWithCode(ctx, code); err != nil {
+		t.Fatalf("password-keyed transient pair: %v", err)
+	}
+	if !client.encrypted {
+		t.Fatal("M4-only transient pairing did not establish encrypted HAP control")
+	}
+	if stats := server.Stats(); stats.PairSetup != 2 || stats.PairVerify != 0 {
+		t.Fatalf("pairing stats = %+v, want M1+M3 only and no pair-verify", stats)
+	}
+	if err := client.FairPlaySetup(ctx); err != nil {
+		t.Fatalf("FairPlay setup over M4-keyed channel: %v", err)
+	}
+	session, err := client.SetupMirror(ctx, StreamConfig{NoAudio: true})
+	if err != nil {
+		t.Fatalf("setup over M4-keyed channel: %v", err)
+	}
+	if err := session.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("close mirror session: %v", err)
+	}
+}
+
+func TestReceiverServerPasswordKeyedTransientRejectsWrongCode(t *testing.T) {
+	_, client, ctx := newReceiverServerTestPair(t, ReceiverConfig{
+		Profile: ReceiverProfileModern,
+		Auth:    ReceiverAuthCombined,
+		Code:    "correct",
+	})
+	if err := client.PairTransientWithCode(ctx, "wrong"); !errors.Is(err, ErrPairingAuthentication) {
+		t.Fatalf("PairTransientWithCode(wrong) = %v, want ErrPairingAuthentication", err)
+	}
+}
+
 func TestReceiverServerHiddenDigestRequirementCanRetrySetup(t *testing.T) {
 	const code = "legacy playback password"
 	server, client, ctx := newReceiverServerTestPair(t, ReceiverConfig{

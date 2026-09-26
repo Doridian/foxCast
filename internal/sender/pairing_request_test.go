@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"testing"
 	"time"
 )
@@ -455,5 +456,21 @@ func waitPairingTestServer(t *testing.T, done <-chan error) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for pairing test server")
+	}
+}
+
+func TestTransientSetupCodes(t *testing.T) {
+	tests := []struct {
+		password string
+		want     []string
+	}{
+		{"", []string{"", "3939"}},
+		{"XiYo8bk8", []string{"XiYo8bk8", "", "3939"}},
+		{"3939", []string{"", "3939"}},
+	}
+	for _, tt := range tests {
+		if got := TransientSetupCodes(tt.password); !slices.Equal(got, tt.want) {
+			t.Errorf("TransientSetupCodes(%q) = %q, want %q", tt.password, got, tt.want)
+		}
 	}
 }

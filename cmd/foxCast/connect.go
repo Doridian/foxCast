@@ -182,6 +182,26 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		savePairing()
 		return nil
 	}
+	// pairTransientCodes runs transient pairing with each candidate setup code,
+	// on a fresh connection per retry. Only an SRP authentication failure moves
+	// on to the next code; anything else is reported immediately.
+	pairTransientCodes := func() error {
+		codes := sender.TransientSetupCodes(credential)
+		var err error
+		for i, code := range codes {
+			if i > 0 {
+				if err := reconnect(); err != nil {
+					return err
+				}
+			}
+			err = c.client.PairTransientWithCode(ctx, code)
+			if !errors.Is(err, sender.ErrPairingAuthentication) {
+				return err
+			}
+			log.Printf("transient pair-setup code %d/%d rejected", i+1, len(codes))
+		}
+		return err
+	}
 	// pairFresh pairs without stored credentials: SRP when the receiver asks
 	// for a PIN/password, otherwise transient pairing with a PIN fallback.
 	pairFresh := func() error {
@@ -191,12 +211,15 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		case sender.PairingCredentialPIN:
 			return pairWithCredential(true)
 		}
+		if c.info.RequiresPassword() {
+			if err := pairTransientCodes(); err != nil {
+				return fmt.Errorf("transient pairing failed for password-protected receiver: %w", err)
+			}
+			return nil
+		}
 		err := c.client.Pair(ctx, "")
 		if err == nil {
 			return nil
-		}
-		if c.info.RequiresPassword() {
-			return fmt.Errorf("transient pairing failed for password-protected receiver: %w", err)
 		}
 		log.Printf("transient pairing failed: %v, requesting pairing credentials", err)
 		// A failed exchange may leave receiver state on this socket.
@@ -214,7 +237,7 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 	case o.forcePair && c.info.RequiresPassword() && c.info.RequiredPairingCredential() == sender.PairingCredentialNone:
 		// A modern receiver's playback password belongs only to HTTP Digest;
 		// SRP rejects it as a bad PIN.
-		if err := c.client.Pair(ctx, ""); err != nil {
+		if err := pairTransientCodes(); err != nil {
 			return nil, fmt.Errorf("transient pairing failed for password-protected receiver: %w", err)
 		}
 	case o.forcePair:

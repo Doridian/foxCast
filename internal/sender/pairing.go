@@ -30,6 +30,10 @@ import (
 // so a caller must start the PIN display instead of probing transient setup.
 var ErrPINRequired = errors.New("receiver requires PIN pairing")
 
+// ErrPairingAuthentication indicates that the receiver rejected the SRP proof
+// at pair-setup M4, i.e. the PIN, password or transient setup code was wrong.
+var ErrPairingAuthentication = errors.New("pair-setup M4 error: authentication (2)")
+
 // PairKeys holds the long-term and session keys from pairing.
 type PairKeys struct {
 	Ed25519Public  ed25519.PublicKey
@@ -61,15 +65,32 @@ const (
 )
 
 const (
-	pairingErrorBackoff       = 3
-	pairSetupBackoffRetries   = 3
-	pairSetupMaximumRetryWait = 30 * time.Second
+	pairingErrorAuthentication = 2
+	pairingErrorBackoff        = 3
+	pairSetupBackoffRetries    = 3
+	pairSetupMaximumRetryWait  = 30 * time.Second
 )
 
 // Pairing flags.
 const (
 	pairingFlagTransient = 0x00000010 // Bit 4: ephemeral/transient pairing
 )
+
+// transientPairingPIN is the fixed SRP password pyatv uses for transient
+// pair-setup (pyatv/protocols/airplay/auth/hap_transient.py).
+const transientPairingPIN = "3939"
+
+// TransientSetupCodes returns the SRP passwords to try, in order, for
+// transient pair-setup. doubletake uses an empty password and pyatv uses
+// "3939"; a receiver with "Require Password" enabled rejects both at M4 with
+// an authentication error, so its configured password is tried first.
+func TransientSetupCodes(password string) []string {
+	codes := make([]string, 0, 3)
+	if password != "" && password != transientPairingPIN {
+		codes = append(codes, password)
+	}
+	return append(codes, "", transientPairingPIN)
+}
 
 // X-Apple-HKP pairing types used by current Apple senders. Screen capture has
 // its own system-pairing type and ACL; transient pairing is a separate type.
@@ -250,6 +271,9 @@ func (c *AirPlayClient) performTransientSetupAndVerify(ctx context.Context) erro
 			}
 			return nil
 		}
+		if c.encrypted {
+			return nil // M4-only transient setup already keyed the channel
+		}
 		if err := c.PairVerify(ctx); err != nil {
 			return fmt.Errorf("pair-verify: %w", err)
 		}
@@ -267,6 +291,9 @@ func (c *AirPlayClient) performTransientSetupAndVerify(ctx context.Context) erro
 		dbg("[PAIR] raw pair-setup failed (%v), trying TLV8 pair-setup", err)
 		if err := c.pairSetupTransient(ctx); err != nil {
 			return fmt.Errorf("pair-setup: %w", err)
+		}
+		if c.encrypted {
+			return nil // M4-only transient setup already keyed the channel
 		}
 		dbg("[PAIR] transient pair-setup complete, starting HAP pair-verify")
 		if err := c.PairVerify(ctx); err != nil {
@@ -363,8 +390,11 @@ func (c *AirPlayClient) pairSetupTransient(ctx context.Context) error {
 		return fmt.Errorf("M2: missing server public key")
 	}
 
-	// SRP-6a exchange with empty PIN for transient
-	return c.completeSRPExchange(ctx, "", serverSalt, serverPub)
+	// pyatv's fixed-code transient flow ends at M4; so does a password-protected
+	// Apple TV, which drops the connection on M5. doubletake's empty-code flow
+	// continues through M5/M6 and pair-verify.
+	m4Only := c.transientSetupCode != ""
+	return c.completeSRPExchange(ctx, c.transientSetupCode, serverSalt, serverPub, m4Only)
 }
 
 // StartPINDisplay triggers the PIN display on the Apple TV.
@@ -432,7 +462,7 @@ func (c *AirPlayClient) pairSetup(ctx context.Context, pin string) error {
 		return fmt.Errorf("M2: missing salt or public key")
 	}
 
-	return c.completeSRPExchange(ctx, pin, salt, serverPubB)
+	return c.completeSRPExchange(ctx, pin, salt, serverPubB, false)
 }
 
 // exchangePairSetupM1 sends an unchanged pair-setup M1 until the receiver
@@ -519,8 +549,10 @@ func pairingErrorName(code int) string {
 	}
 }
 
-// completeSRPExchange finishes SRP from M3 onward (shared by PIN and transient flows).
-func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, salt, serverPubB []byte) error {
+// completeSRPExchange finishes SRP from M3 onward (shared by PIN and transient
+// flows). With m4Only, the exchange stops after M4 and the SRP session key
+// directly keys the encrypted control channel, replacing pair-verify.
+func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, salt, serverPubB []byte, m4Only bool) error {
 	username := []byte("Pair-Setup")
 	password := []byte(pin)
 
@@ -601,6 +633,9 @@ func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, sal
 
 	m4 := tlv8Decode(m4Bytes)
 	if errTLV, ok := m4[tlvError]; ok {
+		if len(errTLV) > 0 && errTLV[0] == pairingErrorAuthentication {
+			return ErrPairingAuthentication
+		}
 		return fmt.Errorf("pair-setup M4 error: %d", errTLV[0])
 	}
 
@@ -611,6 +646,10 @@ func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, sal
 		if !bytes.Equal(serverProof, m2ProofExpected[:]) {
 			return fmt.Errorf("server proof mismatch")
 		}
+	}
+	if m4Only {
+		dbg("[PAIR] M4-only transient pair-setup complete; enabling encryption from SRP key")
+		return c.enableHAPEncryption(K)
 	}
 
 	// M5: Exchange Ed25519 keys over encrypted channel
@@ -772,8 +811,12 @@ func (c *AirPlayClient) hapPairVerify(ctx context.Context) error {
 		dbg("[PAIR-VERIFY] V4: empty response (OK)")
 	}
 
-	// After pair-verify, the AirPlay control channel is encrypted using HAP framing.
-	// Derive channel encryption keys from the X25519 shared secret.
+	return c.enableHAPEncryption(shared)
+}
+
+// enableHAPEncryption switches the control channel to HAP framing, keyed from
+// the pair-verify X25519 secret or an M4-only transient SRP session key.
+func (c *AirPlayClient) enableHAPEncryption(shared []byte) error {
 	c.PairKeys.SharedSecret = shared
 	c.encWriteKey = hkdfSHA512(shared, []byte("Control-Salt"), []byte("Control-Write-Encryption-Key"), 32)
 	c.encReadKey = hkdfSHA512(shared, []byte("Control-Salt"), []byte("Control-Read-Encryption-Key"), 32)

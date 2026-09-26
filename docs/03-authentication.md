@@ -203,6 +203,15 @@ Success. All subsequent RTSP traffic is now HAP-encrypted.
 
 Runs only M1–M4 of pair-setup with hardcoded PIN `"3939"`. No stored credentials. Derives session encryption keys but does not exchange long-term keys. Suitable for audio/video playback without prior HomeKit pairing.
 
+The SRP password and flow are not consistent across implementations:
+
+- doubletake: empty password, then M5/M6 and HAP pair-verify as for full pairing.
+- pyatv: `"3939"`, stopping after M4; the control channel is keyed directly from the SRP session key K (`Control-Salt` / `Control-{Write,Read}-Encryption-Key`), with no pair-verify.
+- Password-protected Apple TV (AppleTV11,1, observed): rejects `""` at M4 with error 2 (authentication), accepts the configured password at M4, then drops the connection when M5 is sent, so it too expects the M4-only flow.
+
+foxCast tries the configured password first, then `""`, then `"3939"` (`sender.TransientSetupCodes`), on a fresh connection per attempt. A non-empty code uses the M4-only flow; the empty code keeps doubletake's full flow.
+
+
 ---
 
 ## HAP Session Encryption

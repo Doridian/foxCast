@@ -316,6 +316,9 @@ type AirPlayClient struct {
 	// Most recent Digest challenge seen on this connection. Cached so later
 	// requests can authenticate up front instead of relying on a retry.
 	authChallenge *digestChallenge
+	// transientSetupCode is the SRP password for transient pair-setup. See
+	// TransientSetupCodes for the values receivers are known to expect.
+	transientSetupCode string
 }
 
 func NewAirPlayClient(host string, port int) *AirPlayClient {
@@ -681,6 +684,14 @@ func parseTXTWire(data []byte) map[string]string {
 		offset += length
 	}
 	return parseTXT(records)
+}
+
+// PairTransientWithCode performs transient pair-setup and pair-verify using
+// code as the SRP password. Callers probing several TransientSetupCodes must
+// use a fresh connection per attempt: a failed M4 leaves receiver state behind.
+func (c *AirPlayClient) PairTransientWithCode(ctx context.Context, code string) error {
+	c.transientSetupCode = code
+	return c.pairTransient(ctx)
 }
 
 func (c *AirPlayClient) Pair(ctx context.Context, pin string) error {

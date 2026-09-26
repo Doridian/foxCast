@@ -576,10 +576,12 @@ func (s *ReceiverServer) serveControlConnection(conn net.Conn) error {
 		pairingCode = s.cfg.Code
 	}
 	pairing, err := newReceiverPairingState(receiverPairingConfig{
-		identifier:  s.identifier,
-		privateKey:  s.privateKey,
-		pin:         pairingCode,
-		controllers: s.controllers,
+		identifier: s.identifier,
+		privateKey: s.privateKey,
+		pin:        pairingCode,
+		// Password-protected receivers key transient pairing with the password.
+		transientPassword: s.cfg.Auth == ReceiverAuthPassword || s.cfg.Auth == ReceiverAuthCombined,
+		controllers:       s.controllers,
 	})
 	if err != nil {
 		return err
@@ -751,7 +753,13 @@ func (c *receiverConnection) dispatch(request receiverRequest) (receiverResponse
 			s.logf("pair-setup rejected: %v", err)
 			return receiverError(400, err), nil
 		}
-		return receiverOK(body, "application/octet-stream"), nil
+		response := receiverOK(body, "application/octet-stream")
+		// M4-only transient setup leaves the connection verified.
+		keys, verified := c.pairing.sessionKeys()
+		if verified && keys.encrypted && c.hap == nil {
+			return response, &keys
+		}
+		return response, nil
 
 	case request.method == "POST" && path == "/pair-verify":
 		s.stats.pairVerify.Add(1)

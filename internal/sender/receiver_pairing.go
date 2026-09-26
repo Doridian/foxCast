@@ -27,11 +27,14 @@ var errReceiverPairingAuthentication = errors.New("pairing authentication failed
 // receiver. A receiverControllerStore is shared by all TCP connections to the
 // same receiver; receiverPairingState itself belongs to one connection.
 type receiverPairingConfig struct {
-	identifier  string
-	privateKey  ed25519.PrivateKey
-	pin         string
-	controllers *receiverControllerStore
-	random      io.Reader
+	identifier string
+	privateKey ed25519.PrivateKey
+	pin        string
+	// transientPassword accepts transient pair-setup keyed by pin (a
+	// configured password) instead of rejecting it; see receiverSRPSetupState.
+	transientPassword bool
+	controllers       *receiverControllerStore
+	random            io.Reader
 }
 
 // receiverControllerStore is the receiver-side equivalent of the sender's
@@ -98,6 +101,7 @@ type receiverPairingState struct {
 	rawVerify            *receiverRawVerifyState
 	rawControllerKey     ed25519.PublicKey
 	transientControllers map[string]ed25519.PublicKey
+	transientPassword    bool
 	session              receiverPairingSessionKeys
 	verified             bool
 }
@@ -109,6 +113,10 @@ type receiverSRPSetupState struct {
 	serverPub *big.Int
 	sharedKey []byte
 	transient bool
+	// m4Only marks a transient setup keyed by the configured password: like
+	// pyatv's fixed-code transient flow, it ends at M4 and the SRP key becomes
+	// the control-channel secret without pair-verify.
+	m4Only bool
 }
 
 type receiverHAPVerifyState struct {
@@ -152,6 +160,7 @@ func newReceiverPairingState(cfg receiverPairingConfig) (*receiverPairingState, 
 		privateKey:           privateKey,
 		publicKey:            publicKey,
 		pin:                  cfg.pin,
+		transientPassword:    cfg.transientPassword,
 		controllers:          cfg.controllers,
 		random:               cfg.random,
 		transientControllers: make(map[string]ed25519.PublicKey),
@@ -207,8 +216,11 @@ func (s *receiverPairingState) beginSRPSetup(message map[byte][]byte) ([]byte, e
 		}
 		transient = true
 	}
-	// A configured password cannot be bypassed by asking for transient pairing.
-	if transient && s.pin != "" {
+	// A configured code cannot be bypassed by asking for transient pairing. A
+	// configured password instead becomes the transient SRP password, and the
+	// exchange ends at M4 (observed on a password-protected AppleTV11,1).
+	m4Only := transient && s.pin != ""
+	if m4Only && !s.transientPassword {
 		return receiverPairingTLVError(2), nil
 	}
 
@@ -229,11 +241,7 @@ func (s *receiverPairingState) beginSRPSetup(message map[byte][]byte) ([]byte, e
 		b.SetInt64(1)
 	}
 
-	pin := s.pin
-	if transient {
-		pin = ""
-	}
-	x := receiverSRPX(salt, pin)
+	x := receiverSRPX(salt, s.pin)
 	v := new(big.Int).Exp(srpG, x, srpN)
 	k := receiverSRPMultiplier()
 	serverPub := new(big.Int).Mul(k, v)
@@ -249,6 +257,7 @@ func (s *receiverPairingState) beginSRPSetup(message map[byte][]byte) ([]byte, e
 		v:         v,
 		serverPub: serverPub,
 		transient: transient,
+		m4Only:    m4Only,
 	}
 	return tlv8EncodeOrdered([]tlv8Item{
 		{Tag: tlvState, Value: []byte{2}},
@@ -296,6 +305,11 @@ func (s *receiverPairingState) verifySRPProof(message map[byte][]byte) ([]byte, 
 
 	setup.sharedKey = append([]byte(nil), sharedKey...)
 	serverProof := receiverPairingHash(clientPublic.Bytes(), wantProof, sharedKey)
+	if setup.m4Only {
+		s.session = receiverHAPSessionKeys(sharedKey)
+		s.verified = true
+		s.setup = nil
+	}
 	return tlv8EncodeOrdered([]tlv8Item{
 		{Tag: tlvState, Value: []byte{4}},
 		{Tag: tlvProof, Value: serverProof},
@@ -506,8 +520,17 @@ func (s *receiverPairingState) finishHAPVerify(message map[byte][]byte) ([]byte,
 		return receiverPairingTLVError(4), nil
 	}
 
-	shared := append([]byte(nil), verify.sharedSecret...)
-	s.session = receiverPairingSessionKeys{
+	s.session = receiverHAPSessionKeys(verify.sharedSecret)
+	s.verified = true
+	s.verify = nil
+	return tlv8EncodeOrdered([]tlv8Item{{Tag: tlvState, Value: []byte{4}}}), nil
+}
+
+// receiverHAPSessionKeys derives HAP control-channel keys from a pair-verify
+// or M4-only transient pair-setup shared secret.
+func receiverHAPSessionKeys(sharedSecret []byte) receiverPairingSessionKeys {
+	shared := append([]byte(nil), sharedSecret...)
+	return receiverPairingSessionKeys{
 		sharedSecret: shared,
 		// The sender writes with Control-Write and reads with Control-Read,
 		// so the receiver's direction is the reverse.
@@ -525,9 +548,6 @@ func (s *receiverPairingState) finishHAPVerify(message map[byte][]byte) ([]byte,
 		),
 		encrypted: true,
 	}
-	s.verified = true
-	s.verify = nil
-	return tlv8EncodeOrdered([]tlv8Item{{Tag: tlvState, Value: []byte{4}}}), nil
 }
 
 func receiverLooksLikeRawVerifyV1(body []byte) bool {
