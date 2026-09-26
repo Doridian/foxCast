@@ -67,6 +67,14 @@ func newEventChannel(conn net.Conn, encrypted bool, sharedSecret []byte) (*event
 }
 
 func (c *AirPlayClient) connectEventChannel(ctx context.Context, port int, clock *mediaClock) (net.Conn, error) {
+	return c.connectEventChannelWithHandler(ctx, port, clock, nil)
+}
+
+// eventHandler receives decoded receiver commands. For play-queue sessions
+// the payload's params.data member (itself a binary plist) is unwrapped.
+type eventHandler func(event map[string]interface{})
+
+func (c *AirPlayClient) connectEventChannelWithHandler(ctx context.Context, port int, clock *mediaClock, onEvent eventHandler) (net.Conn, error) {
 	if port <= 0 {
 		return nil, nil
 	}
@@ -88,7 +96,7 @@ func (c *AirPlayClient) connectEventChannel(ctx context.Context, port int, clock
 
 	dbg("[EVENT] connected to receiver event port %s (encrypted=%t)", address, c.encrypted)
 	go func() {
-		if err := serveEventChannel(ctx, channel, clock); err != nil {
+		if err := serveEventChannel(ctx, channel, clock, onEvent); err != nil {
 			dbg("[EVENT] channel failed: %v", err)
 			_ = conn.Close()
 		}
@@ -296,7 +304,7 @@ func handleEventRequest(request eventRequest, clock *mediaClock, receivedAt time
 // serveEventChannel acknowledges receiver-to-sender commands until teardown.
 // Command decoding is deliberately best-effort: Apple receivers expect a 200
 // acknowledgement even when a command is irrelevant to this sender.
-func serveEventChannel(ctx context.Context, channel *eventChannel, clock *mediaClock) error {
+func serveEventChannel(ctx context.Context, channel *eventChannel, clock *mediaClock, onEvent eventHandler) error {
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -319,6 +327,14 @@ func serveEventChannel(ctx context.Context, channel *eventChannel, clock *mediaC
 		receivedAt := time.Now()
 
 		dbg("[EVENT] <- %s %s CSeq=%d body=%d", request.method, request.path, request.cseq, request.bodyLength)
+		if event := decodeEvent(request.body); event != nil {
+			if t, _ := event["type"].(string); t != "updateInfo" {
+				dbg("[EVENT] %+v", event)
+			}
+			if onEvent != nil {
+				onEvent(event)
+			}
+		}
 		if err := handleEventRequest(request, clock, receivedAt); err != nil {
 			dbg("[EVENT] command ignored: %v", err)
 		}
@@ -332,4 +348,24 @@ func serveEventChannel(ctx context.Context, channel *eventChannel, clock *mediaC
 		}
 		dbg("[EVENT] -> 200 CSeq=%d", request.cseq)
 	}
+}
+
+// decodeEvent decodes a receiver command body. Play-queue sessions wrap the
+// event as {params: {data: <binary plist>}}.
+func decodeEvent(body []byte) map[string]interface{} {
+	if len(body) == 0 {
+		return nil
+	}
+	var outer map[string]interface{}
+	if _, err := plist.Unmarshal(body, &outer); err != nil {
+		return nil
+	}
+	params, _ := outer["params"].(map[string]interface{})
+	if data, ok := params["data"].([]byte); ok {
+		var inner map[string]interface{}
+		if _, err := plist.Unmarshal(data, &inner); err == nil {
+			return inner
+		}
+	}
+	return outer
 }

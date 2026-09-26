@@ -10,14 +10,19 @@
 ## Project layout
 
 ```
-cmd/foxCast/                 CLI: discover, pair, play (URL/file), mirror
+cmd/foxCast/                 CLI: discover, pair, play (URL/file), probe, serve, mirror
 cmd/foxCast-test-receiver/   hardware-free AirPlay receiver for manual testing
 internal/
   sender/                    AirPlay sender core: discovery, HAP/legacy pairing,
                              encrypted RTSP, FairPlay SAP, event channel,
                              URL playback (playback.go), screen mirroring,
                              audio, GStreamer capture, in-process test receiver
-  fileserver/                local HTTP file server for `play <file>`
+  fileserver/                local HTTP server for `play <file>` (file or transmux handler)
+  mediasource/               random/streaming access to a local path or HTTP(S) Range URL
+  mkv/                       Matroska demuxer (header, tracks, Cues, cluster reader)
+  codec/                     bitstream parsing: codec config records, RFC 6381 strings, frame sizes
+  fmp4/                      fragmented MP4 init/media segment writer
+  transmux/                  Matroska → HLS (fMP4) VOD server used by `play`
 docs/                        protocol research and implementation notes
 ```
 

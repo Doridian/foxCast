@@ -2,7 +2,40 @@
 
 This mode instructs an Apple TV to fetch and play a remote URL. The Apple TV downloads the video itself; the sender only sends control commands. This is the simplest way to play video on an Apple TV and is the recommended first implementation target.
 
-## Connection Setup (AirPlay 2 receivers — current tvOS)
+## Play-queue flow (tvOS 26/27) — what foxCast uses
+
+> **Hardware-verified** on AppleTV11,1, tvOS 27 (build 24J361), 2026-09-25,
+> following pyatv PR #2899 (measured by its author on tvOS 26.5).
+
+On current tvOS the `POST /play` flow below is accepted (every request gets
+200 and a spinner appears) but the item is never fetched. pyatv 0.18 has the
+same failure. The receiver instead expects:
+
+| # | Step | Notes |
+|---|------|-------|
+| 1 | pair-verify, encrypt the control connection | as before |
+| 2 | `SETUP rtsp://<local-ip>/<id>` with a **PTP** video session body | `timingProtocol: "PTP"`, `timingPeerInfo`/`timingPeerList` = `{ID, Addresses: [local-ip], DeviceType: 0, SupportsClockPortMatchingOverride: true}`, `sessionUUID`, `sessionCorrelationUUID`, `updateSessionRequest: false`, `isMultiSelectAirPlay: false`, plus the usual device fields. No PTP daemon is needed. With NTP the item plays but no events arrive and the session dies after ~20 s. |
+| 3 | Connect the event channel | Receives `playbackState` and `notification` events (below) |
+| 4 | `RECORD` | |
+| 5 | `GET /info` (HTTP/1.1, on the encrypted connection) | read `psi` |
+| 6 | `SETUP` with `streams: [{type: 130, controlType: 1, channelID: "<psi>-RCS-1", clientUUID, clientTypeUUID: "A6B27562-B43A-4F2D-B75F-82391E250194"}]` | Registers a remote control session; the response has `streamID` and no `dataPort`. Enables `/command`. |
+| 7 | `POST /command HTTP/1.1`, header `X-Apple-StreamID: <streamID>`, body `{params: {data: <binary plist>}}` | inner: `{type: "insertPlayQueueItem", item: {uuid, Content-Location, mediaType: "file", IsTLSEnabled, playbackRestrictions: 0, referenceRestrictions: 2, supportsIntegratedTimeline: false, snapTimeToPausePlayback: false, clientBundleID, clientProcName, playerLoggingID (**≤ 6 chars**, else the connection is dropped), playerItemLoggingID, Start-Position: {flags: 1, value: <s>, epoch: 0, timescale: 1}}}` |
+| 8 | `/command` `{type: "setProperty", property: "isInterestedInDateRange", value: true, item: {uuid}}`, then `{type: "setRate", rate: 1.0}` | Starts paused without `setRate` |
+| 9 | Start `POST /feedback` every 2 s | Only **after** the commands: an RTSP feedback in flight alongside `/command` makes the receiver drop the connection |
+
+`GET /playback-info` answers 500 in this mode. State arrives on the event
+channel wrapped as `{params: {data: <binary plist>}}`: `{type: "playbackState",
+name: "loading"|"playing"|"paused"|"stopped"}` and `{type: "notification",
+name: …}` with names such as `currentItemChanged`, `timeJumped`,
+`playbackLikelyToKeepUp`, `loadedTimeRangesChanged`, `playbackBufferFull`,
+`itemPlayedToEnd`. foxCast falls back to the flow below when the PTP SETUP or
+the remote control SETUP is rejected.
+
+The receiver connects back to the sender (UDP timing port for NTP sessions,
+and the HTTP server for local/transmuxed media), so a host firewall must allow
+them: `-port-range` and `-http-port` pin the ports.
+
+## Legacy connection setup (POST /play, pre-tvOS 26)
 
 > **This replaces the AirPlay 1 `/reverse` flow for HAP-paired receivers.** Sending
 > `/reverse` + `/play` straight after pair-verify does not start playback on modern tvOS. The order below is taken
@@ -261,10 +294,11 @@ This is primarily needed for DRM-protected or custom HLS manifests. For direct v
 
 ## Supported Formats
 
-The Apple TV's own media player handles format support. Recommended formats for broad compatibility:
+The Apple TV's own media player (AVFoundation) handles format support:
+progressive MP4/M4V/MOV, and HLS with MPEG-TS or fMP4 segments. It has no
+Matroska demuxer, so foxCast transmuxes MKV/WebM files to HLS on the fly
+(without re-encoding); see [09-matroska-transmuxing.md](09-matroska-transmuxing.md)
+for the codec matrix and design.
 
-- HLS (`.m3u8`) — best support
-- MP4/M4V with H.264
-- MOV
-
-Local files must be served over HTTP since the Apple TV fetches the URL directly. The sender may need to run a local HTTP server to serve local files.
+Local files must be served over HTTP since the Apple TV fetches the URL directly;
+foxCast runs a local HTTP server for them.

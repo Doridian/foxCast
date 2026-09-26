@@ -10,7 +10,8 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 |---------|-------|
 | mDNS discovery | ✅ |
 | Pairing (transient, PIN, password/Digest; saved credentials) | ✅ |
-| Video URL playback (`play <url>`), incl. local files via built-in HTTP server | ✅ against the test receiver; ⏳ untested on hardware |
+| Video URL playback (`play <url>`), incl. local files via built-in HTTP server (tvOS 26+ play-queue protocol) | ✅ hardware-tested (AppleTV11,1, tvOS 27) |
+| MKV playback: on-the-fly Matroska → HLS/fMP4 transmux (no re-encoding), local or HTTP(S) | ✅ hardware-tested (UHD HEVC HDR10 + AC-3 remux, AppleTV11,1) |
 | Screen mirroring (`mirror`, H.264/HEVC + audio, Wayland/X11) | ✅ against the test receiver; hardware-tested upstream in doubletake (AppleTV11,1/14,1, tvOS 27) |
 | Playback controls in the CLI (pause/seek) | API exists (`PlaybackSession.Rate/Scrub`), not yet exposed |
 | Audio-only streaming (RAOP) to speakers | ⏳ |
@@ -22,9 +23,21 @@ foxCast discover                                  # list receivers
 foxCast pair  -target 10.0.0.5                    # PIN pairing, saves credentials
 foxCast play  -target 10.0.0.5 https://example.com/video.m3u8
 foxCast play  -target 10.0.0.5 ./movie.mp4        # served from this machine
+foxCast play  -target 10.0.0.5 /mnt/nas/movie.mkv # MKV: remuxed to HLS on the fly
+foxCast play  -target 10.0.0.5 https://nas.example/movie.mkv  # needs HTTP Range support
+foxCast probe /mnt/nas/movie.mkv                  # show which tracks will play
 foxCast mirror -target 10.0.0.5                   # screen sharing (needs GStreamer)
 foxCast mirror -target 10.0.0.5 -test -no-audio   # synthetic source
 ```
+
+Matroska files are rewrapped as HLS with fMP4 segments while playing; video and audio are
+copied, not re-encoded. H.264/HEVC video (incl. HDR10, HLG, Dolby Vision 5/8; profile 7 plays
+its HDR10 base layer) and AAC/AC-3/E-AC-3/FLAC/Opus/ALAC/MP3 audio work. Every compatible audio
+track is selectable on the Apple TV; `-audio 3,5` picks tracks. TrueHD/DTS tracks and subtitles
+are skipped. See [docs/09](docs/09-matroska-transmuxing.md).
+
+The receiver fetches local and transmuxed media from foxCast's HTTP server, so a host firewall
+must let it in: pin the port with `-http-port 7020` (and `-port-range` for timing) and open them.
 
 Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOXCAST_CODE`
 (preferred over `-code`). `-debug` or `FOXCAST_TRACE=1` enables protocol logging.
@@ -48,6 +61,7 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 - [06 - Screen Mirroring](docs/06-screen-mirroring.md)
 - [07 - Data Formats](docs/07-data-formats.md)
 - [08 - Cryptography](docs/08-cryptography.md)
+- [09 - Matroska → HLS Transmuxing](docs/09-matroska-transmuxing.md)
 
 ## Sources
 

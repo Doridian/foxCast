@@ -38,7 +38,7 @@ func TestPlayURLEndToEndModernReceiver(t *testing.T) {
 	if stats.Playback.Rate != 1 {
 		t.Fatalf("rate = %v, want 1", stats.Playback.Rate)
 	}
-	wantProperties := []string{"isInterestedInDateRange", "actionAtItemEnd"}
+	wantProperties := []string{"isInterestedInDateRange", "actionAtItemEnd", "forwardEndTime", "reverseEndTime"}
 	if !slices.Equal(stats.Playback.Properties, wantProperties) {
 		t.Fatalf("properties = %v, want %v", stats.Playback.Properties, wantProperties)
 	}

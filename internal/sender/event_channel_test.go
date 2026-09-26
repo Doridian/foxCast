@@ -29,7 +29,7 @@ func TestEncryptedEventChannelAcknowledgesSplitCommand(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- serveEventChannel(ctx, clientChannel, nil)
+		serveErr <- serveEventChannel(ctx, clientChannel, nil, nil)
 	}()
 
 	commandBody := []byte(strings.Repeat("x", 2200))
@@ -74,7 +74,7 @@ func TestPlaintextEventChannelPreservesPipelinedRequests(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- serveEventChannel(ctx, clientChannel, nil)
+		serveErr <- serveEventChannel(ctx, clientChannel, nil, nil)
 	}()
 
 	body1 := []byte("first")
@@ -123,7 +123,7 @@ func TestEventChannelUpdatesTimingPeerAndStillAcknowledges(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- serveEventChannel(ctx, clientChannel, clock)
+		serveErr <- serveEventChannel(ctx, clientChannel, clock, nil)
 	}()
 
 	const timeline = uint64(0x48e15caa8da00008)

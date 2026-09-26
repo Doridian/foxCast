@@ -1,6 +1,7 @@
-// Package fileserver serves a single local file over HTTP so an AirPlay
-// receiver can fetch it directly. The server listens on a random available
-// port and exposes the local outbound IP for building the playback URL.
+// Package fileserver serves a single local file (or any handler, such as a
+// transmuxed HLS presentation) over HTTP so an AirPlay receiver can fetch it
+// directly. The server listens on a random available port and exposes the
+// local outbound IP for building the playback URL.
 package fileserver
 
 import (
@@ -8,44 +9,44 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
-// Server serves one file over HTTP.
+// Server serves an http.Handler to the receiver.
 type Server struct {
 	listener net.Listener
 	srv      *http.Server
-	path     string // absolute path to the file being served
-	filename string // base name used in the URL path
 }
 
-// Start creates a new HTTP server on a random local port serving the file at path.
-// Call URL(remoteAddr) to get the URL to pass to the AirPlay receiver, then
-// call Shutdown when playback is done.
-func Start(ctx context.Context, path string) (*Server, error) {
+// FileHandler serves the file at path under /<base name>. It returns the
+// handler and its URL path.
+func FileHandler(path string) (http.Handler, string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return nil, fmt.Errorf("fileserver: resolve path: %w", err)
+		return nil, "", fmt.Errorf("fileserver: resolve path: %w", err)
 	}
 	if _, err := os.Stat(absPath); err != nil {
-		return nil, fmt.Errorf("fileserver: stat %s: %w", absPath, err)
+		return nil, "", fmt.Errorf("fileserver: stat %s: %w", absPath, err)
 	}
+	urlPath := "/" + url.PathEscape(filepath.Base(absPath))
+	mux := http.NewServeMux()
+	mux.HandleFunc(urlPath, func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, absPath)
+	})
+	return mux, urlPath, nil
+}
 
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+// Start serves handler on the given TCP port (0 = random) until ctx is
+// cancelled or Shutdown is called.
+func Start(ctx context.Context, handler http.Handler, port int) (*Server, error) {
+	ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(port)))
 	if err != nil {
 		return nil, fmt.Errorf("fileserver: listen: %w", err)
 	}
-
-	filename := filepath.Base(absPath)
-	mux := http.NewServeMux()
-	s := &Server{
-		listener: ln,
-		path:     absPath,
-		filename: filename,
-	}
-	mux.HandleFunc("/"+filename, s.serveFile)
-	s.srv = &http.Server{Handler: mux}
+	s := &Server{listener: ln, srv: &http.Server{Handler: handler}}
 
 	go func() {
 		_ = s.srv.Serve(ln)
@@ -60,23 +61,19 @@ func Start(ctx context.Context, path string) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, s.path)
-}
-
 // Port returns the port the server is listening on.
 func (s *Server) Port() int {
 	return s.listener.Addr().(*net.TCPAddr).Port
 }
 
-// URL returns the HTTP URL the AirPlay receiver should use to fetch the file.
+// URL returns the HTTP URL of urlPath that the AirPlay receiver should use.
 // receiverAddr is the receiver's address (used to determine the correct local IP).
-func (s *Server) URL(receiverAddr string) (string, error) {
+func (s *Server) URL(receiverAddr, urlPath string) (string, error) {
 	localIP, err := outboundIP(receiverAddr)
 	if err != nil {
 		return "", fmt.Errorf("fileserver: determine local IP: %w", err)
 	}
-	return fmt.Sprintf("http://%s:%d/%s", localIP, s.Port(), s.filename), nil
+	return "http://" + net.JoinHostPort(localIP, strconv.Itoa(s.Port())) + urlPath, nil
 }
 
 // Shutdown stops the server.
