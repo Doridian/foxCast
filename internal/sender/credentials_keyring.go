@@ -48,3 +48,10 @@ func (kb *keyringBackend) Save(deviceID string, creds *SavedCredentials) error {
 	}
 	return nil
 }
+
+func (kb *keyringBackend) Delete(deviceID string) error {
+	if err := keyring.Delete(keyringService, deviceID); err != nil && err != keyring.ErrNotFound {
+		return fmt.Errorf("keyring delete %s: %w", deviceID, err)
+	}
+	return nil
+}

@@ -30,6 +30,39 @@ const traceEnvironment = "FOXCAST_TRACE"
 
 const discoveryTimeout = 5 * time.Second
 
+// credentialKind is what a receiver asks the user for, so a prompt can word
+// itself (and mask its input) accordingly.
+type credentialKind int
+
+const (
+	// credentialPassword is the receiver's configured password.
+	credentialPassword credentialKind = iota
+	// credentialPIN is the one-time PIN the receiver is displaying.
+	credentialPIN
+	// credentialPINOrPassword is either; the receiver did not say which.
+	credentialPINOrPassword
+)
+
+// credentialPrompter asks the user for a pairing PIN or receiver password.
+// receiver names the receiver asking. An empty result means none was given.
+type credentialPrompter interface {
+	promptCredential(ctx context.Context, receiver string, kind credentialKind) (string, error)
+}
+
+// terminalPrompter prompts on stdin/stdout.
+type terminalPrompter struct{}
+
+func (terminalPrompter) promptCredential(_ context.Context, _ string, kind credentialKind) (string, error) {
+	switch kind {
+	case credentialPassword:
+		return readCredential("Enter the receiver's configured password: "), nil
+	case credentialPIN:
+		return readCredential("Enter the PIN shown on the receiver: "), nil
+	default:
+		return readCredential("Enter the receiver's configured password or pairing PIN: "), nil
+	}
+}
+
 // connectOptions are the flags shared by every subcommand that talks to a
 // receiver.
 type connectOptions struct {
@@ -43,15 +76,32 @@ type connectOptions struct {
 	debug       bool
 
 	portMin, portMax int
+
+	// store, when set, is used instead of opening the -creds/-cred-backend
+	// store, so concurrent sessions share one view of it.
+	store *sender.CredentialStore
+	// device, when set, is the receiver to use instead of discovering one.
+	device *sender.AirPlayDevice
+	// prompter asks for PINs and passwords; nil prompts on the terminal.
+	prompter credentialPrompter
+	// onConnected, when set, runs once the receiver has described itself,
+	// before pairing.
+	onConnected func(*sender.ReceiverInfo)
 }
 
 func (o *connectOptions) register(flags *flag.FlagSet) {
 	flags.StringVar(&o.target, "target", "", "receiver IP address or hostname (skip discovery)")
 	flags.IntVar(&o.port, "port", 7000, "AirPlay port")
 	flags.StringVar(&o.code, "code", "", "pairing PIN shown on the receiver, or its configured password; prefer $"+codeEnvironment)
+	flags.BoolVar(&o.forcePair, "pair", false, "force new pairing even if credentials exist")
+	o.registerSession(flags)
+}
+
+// registerSession registers the flags that do not pick or pair a particular
+// receiver.
+func (o *connectOptions) registerSession(flags *flag.FlagSet) {
 	flags.StringVar(&o.credFile, "creds", sender.DefaultCredentialsPath(), "path to saved pairing credentials")
 	flags.StringVar(&o.credBackend, "cred-backend", "file", "credential storage backend: file or keyring")
-	flags.BoolVar(&o.forcePair, "pair", false, "force new pairing even if credentials exist")
 	flags.StringVar(&o.portRange, "port-range", "", "local UDP port range for timing/audio (e.g. 60000-60010); empty = ephemeral")
 	flags.BoolVar(&o.debug, "debug", false, "verbose protocol logging")
 }
@@ -70,6 +120,23 @@ func (o *connectOptions) finish(minPorts int) error {
 	return nil
 }
 
+// askCredential prompts for a credential, treating an empty answer as an
+// error named by what.
+func (o *connectOptions) askCredential(ctx context.Context, receiver string, kind credentialKind, what string) (string, error) {
+	p := o.prompter
+	if p == nil {
+		p = terminalPrompter{}
+	}
+	value, err := p.promptCredential(ctx, receiver, kind)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return "", fmt.Errorf("%s cannot be empty", what)
+	}
+	return value, nil
+}
+
 // connection is a paired, encrypted control connection to a receiver.
 type connection struct {
 	// addr is the receiver's control address ("host:port").
@@ -84,8 +151,10 @@ type connection struct {
 // When fairPlay is set, the FairPlay SAP handshake is run afterwards.
 func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection, error) {
 	addr, port := o.target, o.port
-	var advertisement *sender.AirPlayDevice
-	if addr == "" {
+	advertisement := o.device
+	if advertisement != nil {
+		addr, port = advertisement.IP, advertisement.Port
+	} else if addr == "" {
 		device, err := selectDevice(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("discovery: %w", err)
@@ -94,9 +163,12 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		fmt.Printf("selected: %s (%s:%d)\n", device.Name, device.IP, device.Port)
 	}
 
-	store, err := newCredentialStore(o.credBackend, o.credFile)
-	if err != nil {
-		return nil, fmt.Errorf("load credentials: %w", err)
+	store := o.store
+	if store == nil {
+		var err error
+		if store, err = newCredentialStore(o.credBackend, o.credFile); err != nil {
+			return nil, fmt.Errorf("load credentials: %w", err)
+		}
 	}
 
 	// A receiver's configured password is saved alongside its pairing, so it
@@ -141,6 +213,9 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		}
 	}()
 	log.Printf("connected to: %s (model: %s)", c.info.Name, c.info.Model)
+	if o.onConnected != nil {
+		o.onConnected(c.info)
+	}
 
 	if !o.forcePair {
 		saved = store.Lookup(c.info.DeviceID)
@@ -151,9 +226,10 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		c.client.SetPassword(credential)
 	}
 	if credential == "" && c.info.RequiresPassword() {
-		credential = readCredential("Enter the receiver's configured password: ")
-		if credential == "" {
-			return nil, errors.New("password cannot be empty")
+		var err error
+		credential, err = o.askCredential(ctx, c.info.Name, credentialPassword, "password")
+		if err != nil {
+			return nil, err
 		}
 		c.client.SetPassword(credential)
 	}
@@ -177,13 +253,14 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 				log.Printf("warning: failed to trigger PIN display: %v", err)
 				expectPIN = false
 			}
-			prompt := "Enter the receiver's configured password or pairing PIN: "
+			kind := credentialPINOrPassword
 			if expectPIN {
-				prompt = "Enter the PIN shown on the receiver: "
+				kind = credentialPIN
 			}
-			value = readCredential(prompt)
-			if value == "" {
-				return errors.New("pairing credential cannot be empty")
+			var err error
+			value, err = o.askCredential(ctx, c.info.Name, kind, "pairing credential")
+			if err != nil {
+				return err
 			}
 		}
 		// The same user-entered value may be needed for Digest auth later.

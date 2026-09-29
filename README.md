@@ -13,6 +13,7 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 | Video URL playback (`play <url>`), incl. local files via built-in HTTP server (tvOS 26+ play-queue protocol) | ✅ hardware-tested (AppleTV11,1, tvOS 27) |
 | MKV playback: on-the-fly Matroska → HLS/fMP4 transmux (no re-encoding), local or HTTP(S) | ✅ hardware-tested (UHD HEVC HDR10 + AC-3 remux, AppleTV11,1) |
 | Screen mirroring (`mirror`, H.264/HEVC + audio, Wayland/X11) | ✅ against the test receiver; hardware-tested upstream in doubletake (AppleTV11,1/14,1, tvOS 27) |
+| System tray app (`gui`, Qt 6; Plasma-style popup, native pairing dialogs) | ✅ against the test receiver |
 | Playback controls in the CLI (pause/seek) | API exists (`PlaybackSession.Rate/Scrub`), not yet exposed |
 | Audio-only streaming (RAOP) to speakers | ⏳ |
 
@@ -48,6 +49,27 @@ Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOX
 Mirroring needs GStreamer (`gst-launch-1.0` with base/good/bad/ugly/libav plugins) and, on
 Wayland, xdg-desktop-portal. The receiver probes a local UDP timing port during SETUP; use
 `-port-range MIN-MAX` to pin the ports if a firewall is in the way.
+
+### Tray app
+
+`foxCast gui` puts an icon in the system tray. Clicking it opens a popup against the panel,
+like Plasma's Networks applet: paired receivers are listed first, the others below. Click a
+receiver to mirror the screen, play a file (native file picker) or paste a URL, or to forget its
+pairing. PIN and password prompts appear as dialogs. The `mirror`, `play` and credential flags
+work here too and apply to every session.
+
+The GUI uses Qt 6 through [miqt](https://github.com/mappu/miqt), so it needs CGo and the Qt 6
+development files, and is behind a build tag:
+
+```sh
+go build -tags gui ./cmd/foxCast            # needs Qt 6 (qt6-base) and, for Wayland, layer-shell-qt
+install -Dm644 contrib/foxcast.desktop ~/.local/share/applications/foxcast.desktop
+```
+
+It follows the Plasma style, colours and icons. The tray icon is a StatusNotifierItem (Plasma,
+and other desktops with an SNI host). On Wayland the popup is a layer-shell surface anchored to
+the panel. Without a tray host, the receiver list opens as an ordinary window. The first build of
+miqt takes a few minutes.
 
 For hardware-free testing, run `go run ./cmd/foxCast-test-receiver -profile modern -auth none -listen 127.0.0.1:7000`
 and point foxCast at `-target 127.0.0.1`.

@@ -341,6 +341,7 @@ func decodeFeatureSet(s string) (FeatureSet, error) {
 
 // Feature bit constants for AirPlay receivers.
 const (
+	FeatureVideo          uint64 = 1 << 0
 	FeatureScreen         uint64 = 1 << 7
 	FeatureScreenRotate   uint64 = 1 << 8
 	FeatureAudio          uint64 = 1 << 10
@@ -358,6 +359,12 @@ const (
 
 func (d *AirPlayDevice) SupportsScreen() bool {
 	return d.HasFeature(7)
+}
+
+// SupportsVideo reports AirPlay video (URL playback) support (bit 0), which
+// audio-only receivers such as speakers lack.
+func (d *AirPlayDevice) SupportsVideo() bool {
+	return d.HasFeature(0)
 }
 
 // HasFeature reports whether a legacy or extended advertised feature is set.

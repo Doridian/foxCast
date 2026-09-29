@@ -33,6 +33,8 @@ func main() {
 		err = cmdProbe(ctx, args)
 	case "serve":
 		err = cmdServe(ctx, args)
+	case "gui":
+		err = cmdGUI(ctx, args)
 	case "-h", "-help", "--help", "help":
 		usage()
 		return
@@ -57,6 +59,7 @@ Usage:
   foxCast mirror [flags]               Mirror the screen to a receiver
   foxCast probe  [flags] <url|file>    Show how a file would be played (tracks, transmuxing)
   foxCast serve  [flags] <url|file>    Serve a file (as HLS if it is Matroska) without a receiver
+  foxCast gui    [flags]               System tray app (build with -tags gui)
 
 Run "foxCast <command> -h" for command flags.
 `)

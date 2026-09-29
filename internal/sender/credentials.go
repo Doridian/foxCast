@@ -100,6 +100,9 @@ func (c *AirPlayClient) RestorePairingCredentials(saved *SavedCredentials) error
 type CredentialBackend interface {
 	Lookup(deviceID string) (*SavedCredentials, error)
 	Save(deviceID string, creds *SavedCredentials) error
+	// Delete removes a device's credentials; deleting a missing device is
+	// not an error.
+	Delete(deviceID string) error
 }
 
 // CredentialStore manages per-device pairing credentials using a pluggable backend.
@@ -219,6 +222,14 @@ func (cs *CredentialStore) SaveRestoreToken(deviceID, restoreToken string) error
 	return cs.backend.Save(deviceID, creds)
 }
 
+// Forget removes everything saved for a device: its pairing, password and
+// screencast restore token.
+func (cs *CredentialStore) Forget(deviceID string) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return cs.backend.Delete(deviceID)
+}
+
 // fileBackend stores credentials as a JSON file on disk.
 type fileBackend struct {
 	path    string
@@ -249,6 +260,14 @@ func (fb *fileBackend) Lookup(deviceID string) (*SavedCredentials, error) {
 
 func (fb *fileBackend) Save(deviceID string, creds *SavedCredentials) error {
 	fb.devices[deviceID] = creds
+	return fb.persist()
+}
+
+func (fb *fileBackend) Delete(deviceID string) error {
+	if _, ok := fb.devices[deviceID]; !ok {
+		return nil
+	}
+	delete(fb.devices, deviceID)
 	return fb.persist()
 }
 

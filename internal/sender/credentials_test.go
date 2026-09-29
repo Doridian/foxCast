@@ -239,3 +239,37 @@ func TestRestorePairingCredentialsRejectsUnknownProtocol(t *testing.T) {
 		t.Fatal("failed restore partially mutated the client")
 	}
 }
+
+func TestCredentialStoreForget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	store, err := NewCredentialStore(path)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	for _, id := range []string{"device-1", "device-2"} {
+		if err := store.SavePairing(id, "pair-"+id, pub, priv, PairingProtocolHAP); err != nil {
+			t.Fatalf("SavePairing %s: %v", id, err)
+		}
+	}
+	if err := store.Forget("device-1"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	if err := store.Forget("never-paired"); err != nil {
+		t.Fatalf("Forget missing device: %v", err)
+	}
+
+	reloaded, err := NewCredentialStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if creds := reloaded.Lookup("device-1"); creds != nil {
+		t.Fatalf("forgotten device still stored: %+v", creds)
+	}
+	if creds := reloaded.Lookup("device-2"); creds == nil || !creds.HasPairingCredentials() {
+		t.Fatalf("other device lost: %+v", creds)
+	}
+}

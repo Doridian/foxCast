@@ -3,7 +3,7 @@
 ## Module and language
 
 - Go module: `git.foxden.network/FoxDen/foxCast`
-- Language: Go (no Rust, no CGo unless absolutely unavoidable — the optional `fdk_aac` build tag is the one exception)
+- Language: Go (no Rust, no CGo unless absolutely unavoidable — the optional `fdk_aac` and `gui` build tags are the exceptions)
 - Minimum Go version: whatever is in `go.mod`
 - License: LGPL-3.0-or-later (`LICENSE`, `COPYING.GPL`)
 
@@ -23,6 +23,10 @@ internal/
   codec/                     bitstream parsing: codec config records, RFC 6381 strings, frame sizes
   fmp4/                      fragmented MP4 init/media segment writer
   transmux/                  Matroska → HLS (fMP4) VOD server used by `play`
+  gui/                       tray app for `foxCast gui`: Qt 6 (miqt) UI, StatusNotifierItem +
+                             dbusmenu over D-Bus, LayerShellQt popup placement; Qt files need
+                             `-tags gui`, the model (model.go) is toolkit-free and tested untagged
+contrib/                     desktop entry
 docs/                        protocol research and implementation notes
 ```
 
@@ -32,7 +36,8 @@ docs/                        protocol research and implementation notes
 ## Commands
 
 ```bash
-go build ./...                          # build everything
+go build ./...                          # build everything (without the GUI)
+go build -tags gui ./cmd/foxCast        # with `foxCast gui` (needs Qt 6 dev files, CGo)
 go test ./...                           # all tests (includes end-to-end tests against the in-process receiver)
 FOXCAST_TRACE=1 go run ./cmd/foxCast …  # CLI with verbose protocol logging (same as -debug)
 go run ./cmd/foxCast -- <args>          # run the CLI
@@ -62,6 +67,7 @@ go run ./cmd/foxCast-test-receiver -profile modern -auth none -listen 127.0.0.1:
 - `github.com/godbus/dbus/v5` — xdg-desktop-portal screencast (Wayland)
 - `github.com/zalando/go-keyring` — optional keyring credential backend
 - GStreamer (runtime, via `gst-launch-1.0` subprocess) — capture and encoding for mirroring
+- `github.com/mappu/miqt` — Qt 6 bindings for the GUI (`gui` tag only); UI toolkit choices stay with Qt/KDE so Plasma theming applies
 
 ## Protocol documentation
 

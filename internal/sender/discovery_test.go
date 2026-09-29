@@ -306,6 +306,15 @@ func TestSupportsScreenUsesMirroringFeatureNotRotation(t *testing.T) {
 	}
 }
 
+func TestSupportsVideo(t *testing.T) {
+	if !(&AirPlayDevice{Features: FeatureVideo | FeatureScreen}).SupportsVideo() {
+		t.Fatal("video feature was not recognized")
+	}
+	if (&AirPlayDevice{Features: FeatureAudio}).SupportsVideo() {
+		t.Fatal("audio-only receiver was reported as supporting video")
+	}
+}
+
 func TestSupportsTransientPairingUsesModernFeatureBits(t *testing.T) {
 	for _, bit := range []uint64{FeatureSystemPairing, FeatureTransientPairing} {
 		if !(&ReceiverInfo{Features: bit}).SupportsTransientPairing() {

@@ -163,8 +163,34 @@ func cmdPlay(ctx context.Context, args []string) error {
 		printSession(m.session)
 	}
 
+	return playMedia(ctx, &opts, flags.Arg(0), m, playOptions{
+		start:    *start,
+		httpPort: *httpPort,
+		onStarted: func() {
+			fmt.Println("Playback started. Press Ctrl+C to stop.")
+		},
+		onStopping: func() {
+			fmt.Println("\nStopping...")
+		},
+	})
+}
+
+// playOptions tune playMedia.
+type playOptions struct {
+	// start is the start position in seconds.
+	start float64
+	// httpPort is the local port media is served from (0 = random).
+	httpPort int
+	// onStarted and onStopping, when set, run once the receiver starts
+	// playing and once ctx is cancelled.
+	onStarted, onStopping func()
+}
+
+// playMedia connects to a receiver and plays m on it until playback ends or
+// ctx is cancelled; cancellation stops playback and is not an error.
+func playMedia(ctx context.Context, opts *connectOptions, location string, m *media, po playOptions) error {
 	// URL playback needs no FairPlay setup (pyatv does none).
-	conn, err := connect(ctx, &opts, false)
+	conn, err := connect(ctx, opts, false)
 	if err != nil {
 		return err
 	}
@@ -172,7 +198,7 @@ func cmdPlay(ctx context.Context, args []string) error {
 
 	url := m.url
 	if m.handler != nil {
-		srv, err := fileserver.Start(ctx, m.handler, *httpPort)
+		srv, err := fileserver.Start(ctx, m.handler, po.httpPort)
 		if err != nil {
 			return fmt.Errorf("file server: %w", err)
 		}
@@ -181,23 +207,27 @@ func cmdPlay(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("file URL: %w", err)
 		}
-		log.Printf("serving %s at %s", flags.Arg(0), url)
+		log.Printf("serving %s at %s", location, url)
 	}
 
 	log.Printf("playing %s", url)
 	session, err := conn.client.PlayURL(ctx, url, sender.PlaybackConfig{
-		StartSeconds: *start,
+		StartSeconds: po.start,
 		PortMin:      opts.portMin,
 		PortMax:      opts.portMax,
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Println("Playback started. Press Ctrl+C to stop.")
+	if po.onStarted != nil {
+		po.onStarted()
+	}
 
 	err = session.Wait(ctx)
 	if errors.Is(err, context.Canceled) {
-		fmt.Println("\nStopping...")
+		if po.onStopping != nil {
+			po.onStopping()
+		}
 		err = nil
 	}
 	closed := make(chan struct{})

@@ -20,55 +20,93 @@ import (
 // needs (timing, audio control, audio data).
 const mirrorUDPPorts = 3
 
+// mirrorOptions are the mirroring flags.
+type mirrorOptions struct {
+	fps             int
+	bitrate         int
+	targetLatencyMs int
+	hwaccel         string
+	videoCodec      string
+	testMode        bool
+	noEncrypt       bool
+	directKey       bool
+	noAudio         bool
+	audioSource     string
+	keepDefaultSink bool
+	x11WindowID     string
+	x11WindowName   string
+	noCursor        bool
+
+	xid uint64
+}
+
+func (m *mirrorOptions) register(flags *flag.FlagSet) {
+	flags.IntVar(&m.fps, "fps", 30, "frames per second")
+	flags.IntVar(&m.bitrate, "bitrate", 0, "video bitrate in kbps (0 = auto)")
+	flags.IntVar(&m.targetLatencyMs, "target-latency-ms", 0, "joint audio/video playout latency override in ms (0 = automatic)")
+	flags.StringVar(&m.hwaccel, "hwaccel", "auto", "encoder: auto, nvenc, vaapi, openh264, none (x264/x265)")
+	flags.StringVar(&m.videoCodec, "video-codec", "auto", "screen codec: auto, h264, or hevc")
+	flags.BoolVar(&m.testMode, "test", false, "use synthetic video/audio instead of screen capture")
+	flags.BoolVar(&m.noEncrypt, "no-encrypt", false, "disable RTSP header encryption (debugging only)")
+	flags.BoolVar(&m.directKey, "direct-key", false, "use shk/shiv directly without SHA-512 derivation")
+	flags.BoolVar(&m.noAudio, "no-audio", false, "disable audio streaming")
+	flags.StringVar(&m.audioSource, "audio-source", audioSourceSink, "audio to forward: \"sink\" (a virtual output device for this receiver), \"monitor\" (whatever the default output plays), or a PulseAudio source name")
+	flags.BoolVar(&m.keepDefaultSink, "keep-default-sink", false, "with -audio-source sink, do not make the virtual output device the default")
+	flags.StringVar(&m.x11WindowID, "x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
+	flags.StringVar(&m.x11WindowName, "x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
+	flags.BoolVar(&m.noCursor, "no-cursor", false, "hide the mouse cursor in the captured video")
+}
+
+// finish validates the parsed flags and applies process-wide settings.
+func (m *mirrorOptions) finish() error {
+	if err := sender.ValidateHWAccel(m.hwaccel); err != nil {
+		return fmt.Errorf("invalid -hwaccel: %w", err)
+	}
+	if err := sender.ValidateVideoCodec(m.videoCodec); err != nil {
+		return fmt.Errorf("invalid -video-codec: %w", err)
+	}
+	var err error
+	if m.xid, err = parseXID(m.x11WindowID); err != nil {
+		return fmt.Errorf("invalid -x11-window-id: %w", err)
+	}
+	sender.SetTargetLatency(time.Duration(m.targetLatencyMs) * time.Millisecond)
+	return nil
+}
+
 func cmdMirror(ctx context.Context, args []string) error {
 	var opts connectOptions
+	var mo mirrorOptions
 	flags := flag.NewFlagSet("mirror", flag.ContinueOnError)
 	opts.register(flags)
-	fps := flags.Int("fps", 30, "frames per second")
-	bitrate := flags.Int("bitrate", 0, "video bitrate in kbps (0 = auto)")
-	targetLatencyMs := flags.Int("target-latency-ms", 0, "joint audio/video playout latency override in ms (0 = automatic)")
-	hwaccel := flags.String("hwaccel", "auto", "encoder: auto, nvenc, vaapi, openh264, none (x264/x265)")
-	videoCodec := flags.String("video-codec", "auto", "screen codec: auto, h264, or hevc")
-	testMode := flags.Bool("test", false, "use synthetic video/audio instead of screen capture")
-	noEncrypt := flags.Bool("no-encrypt", false, "disable RTSP header encryption (debugging only)")
-	directKey := flags.Bool("direct-key", false, "use shk/shiv directly without SHA-512 derivation")
-	noAudio := flags.Bool("no-audio", false, "disable audio streaming")
-	audioSource := flags.String("audio-source", audioSourceSink, "audio to forward: \"sink\" (a virtual output device for this receiver), \"monitor\" (whatever the default output plays), or a PulseAudio source name")
-	keepDefaultSink := flags.Bool("keep-default-sink", false, "with -audio-source sink, do not make the virtual output device the default")
-	x11WindowID := flags.String("x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
-	x11WindowName := flags.String("x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
-	noCursor := flags.Bool("no-cursor", false, "hide the mouse cursor in the captured video")
+	mo.register(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if err := sender.ValidateHWAccel(*hwaccel); err != nil {
-		return fmt.Errorf("invalid -hwaccel: %w", err)
-	}
-	if err := sender.ValidateVideoCodec(*videoCodec); err != nil {
-		return fmt.Errorf("invalid -video-codec: %w", err)
-	}
-	xid, err := parseXID(*x11WindowID)
-	if err != nil {
-		return fmt.Errorf("invalid -x11-window-id: %w", err)
+	if err := mo.finish(); err != nil {
+		return err
 	}
 	if err := opts.finish(mirrorUDPPorts); err != nil {
 		return err
 	}
-	sender.SetTargetLatency(time.Duration(*targetLatencyMs) * time.Millisecond)
+	return runMirror(ctx, &opts, &mo, nil)
+}
 
-	conn, err := connect(ctx, &opts, true)
+// runMirror connects to a receiver and mirrors the screen to it until ctx is
+// cancelled or the stream ends. onStarted, when set, runs once frames flow.
+func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onStarted func()) error {
+	conn, err := connect(ctx, opts, true)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
 	streamCfg := sender.StreamConfig{
-		FPS:        *fps,
-		Bitrate:    *bitrate,
-		VideoCodec: sender.VideoCodec(*videoCodec),
-		NoEncrypt:  *noEncrypt,
-		DirectKey:  *directKey,
-		NoAudio:    *noAudio,
+		FPS:        mo.fps,
+		Bitrate:    mo.bitrate,
+		VideoCodec: sender.VideoCodec(mo.videoCodec),
+		NoEncrypt:  mo.noEncrypt,
+		DirectKey:  mo.directKey,
+		NoAudio:    mo.noAudio,
 		PortMin:    opts.portMin,
 		PortMax:    opts.portMax,
 	}
@@ -76,16 +114,16 @@ func cmdMirror(ctx context.Context, args []string) error {
 	// but delay encoder startup until control SETUP returns session-time
 	// display information (some receivers omit displays before that).
 	captureCfg := sender.CaptureConfig{
-		FPS:           *fps,
-		Bitrate:       *bitrate,
-		HWAccel:       *hwaccel,
-		VideoCodec:    sender.VideoCodec(*videoCodec),
-		X11WindowID:   xid,
-		X11WindowName: *x11WindowName,
-		ShowCursor:    !*noCursor,
+		FPS:           mo.fps,
+		Bitrate:       mo.bitrate,
+		HWAccel:       mo.hwaccel,
+		VideoCodec:    sender.VideoCodec(mo.videoCodec),
+		X11WindowID:   mo.xid,
+		X11WindowName: mo.x11WindowName,
+		ShowCursor:    !mo.noCursor,
 	}
 	var preparation *sender.CapturePreparation
-	if *testMode {
+	if mo.testMode {
 		log.Println("using synthetic test source")
 		preparation, err = sender.PrepareTestCapture(ctx, captureCfg)
 	} else {
@@ -125,14 +163,14 @@ func cmdMirror(ctx context.Context, args []string) error {
 			return sender.VideoPreparationResult{}, err
 		}
 		if codec == sender.VideoCodecHEVC && !sender.HasExplicitTargetLatency() {
-			liveVideoLead, err = sender.MeasureVideoCaptureLatency(ctx, started, *fps)
+			liveVideoLead, err = sender.MeasureVideoCaptureLatency(ctx, started, mo.fps)
 			if err != nil {
 				started.Stop()
 				return sender.VideoPreparationResult{}, fmt.Errorf("measure production HEVC timing: %w", err)
 			}
 			log.Printf("production HEVC timing requires at least %v video lead", liveVideoLead)
 		}
-		active := sender.NewBroadcastCaptureWithFrameRate(started, *fps)
+		active := sender.NewBroadcastCaptureWithFrameRate(started, mo.fps)
 		done := make(chan error, 1)
 		capture, broadcast, broadcastDone = started, active, done
 		startedWidth, startedHeight, startedCodec = width, height, codec
@@ -152,9 +190,9 @@ func cmdMirror(ctx context.Context, args []string) error {
 	if errors.Is(err, sender.ErrCredentialsRequired) {
 		// Some receivers only reveal a configured password by challenging the
 		// first media SETUP. Keep pairing/FairPlay state and retry once.
-		credential := readCredential("Enter the receiver's code or configured password: ")
-		if credential == "" {
-			return errors.New("receiver code/password cannot be empty")
+		credential, askErr := opts.askCredential(ctx, conn.info.Name, credentialPINOrPassword, "receiver code/password")
+		if askErr != nil {
+			return askErr
 		}
 		conn.client.SetPassword(credential)
 		if startedCodec != "" {
@@ -181,8 +219,8 @@ func cmdMirror(ctx context.Context, args []string) error {
 		session.Close()
 	}()
 
-	if !*noAudio && session.HasAudio() {
-		source, closeSource, err := openAudioSource(*audioSource, *testMode, !*keepDefaultSink, conn.info)
+	if !mo.noAudio && session.HasAudio() {
+		source, closeSource, err := openAudioSource(mo.audioSource, mo.testMode, !mo.keepDefaultSink, conn.info)
 		var audioCapture *sender.AudioCapture
 		if err == nil {
 			defer closeSource()
@@ -199,7 +237,7 @@ func cmdMirror(ctx context.Context, args []string) error {
 			}()
 			log.Println("audio capture started")
 		}
-	} else if !*noAudio {
+	} else if !mo.noAudio {
 		log.Println("audio disabled (receiver did not provide audio ports)")
 	}
 
@@ -208,6 +246,9 @@ func cmdMirror(ctx context.Context, args []string) error {
 		return fmt.Errorf("attach video capture: %w", err)
 	}
 	defer videoSink.Close()
+	if onStarted != nil {
+		onStarted()
+	}
 	if err := session.StreamFrames(ctx, videoSink.AsCapture(), 0); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("streaming: %w", err)
 	}

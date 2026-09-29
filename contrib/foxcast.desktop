@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=foxCast
+GenericName=AirPlay Sender
+Comment=Mirror your screen or play videos on an Apple TV
+Exec=foxCast gui
+Icon=video-television
+Categories=AudioVideo;Video;Network;
+Keywords=AirPlay;Apple TV;cast;mirror;screen;
+StartupNotify=false
