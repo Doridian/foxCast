@@ -101,7 +101,9 @@ func cmdMirror(ctx context.Context, args []string) error {
 
 // mirrorHooks lets the GUI follow and steer a mirror session.
 type mirrorHooks struct {
-	// started, when set, runs once frames (or audio) flow.
+	// status, when set, reports progress before started.
+	status func(string)
+	// started, when set, runs once the screen (or audio) reaches the receiver.
 	started func()
 	// switchable, when set, receives a function that asks for a new capture
 	// source and switches the running session to it. It is only called when
@@ -142,9 +144,15 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		PortMin:    opts.portMin,
 		PortMax:    opts.portMax,
 	}
-	// Complete the potentially interactive Wayland portal request before SETUP,
-	// but delay encoder startup until control SETUP returns session-time
-	// display information (some receivers omit displays before that).
+	// The session can end because the user dismissed the source picker.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+
+	// Like macOS, pair and connect first. On Wayland the receiver shows a
+	// "choosing what to share" placeholder while the portal picker is open,
+	// which also keeps the picker outside the receiver's first-frame deadline.
+	// Encoder startup waits until control SETUP returns session-time display
+	// information (some receivers omit displays before that).
 	captureCfg := sender.CaptureConfig{
 		FPS:           mo.fps,
 		Bitrate:       mo.bitrate,
@@ -153,6 +161,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		X11WindowID:   mo.xid,
 		X11WindowName: mo.x11WindowName,
 		ShowCursor:    !mo.noCursor,
+		DeferSource:   !mo.testMode,
 	}
 	var preparation *sender.CapturePreparation
 	if mo.testMode {
@@ -280,18 +289,41 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		return fmt.Errorf("attach video capture: %w", err)
 	}
 	defer videoSink.Close()
-	if hooks.started != nil {
-		hooks.started()
+
+	var switching sync.Mutex
+	switchSource := func(pickCtx context.Context, restore bool) error {
+		switching.Lock()
+		defer switching.Unlock()
+		return switchCaptureSource(ctx, pickCtx, preparation, broadcast, startedWidth, startedHeight, startedCodec, restore)
 	}
-	if hooks.switchable != nil && preparation.CanSwitchSource() {
-		var switching sync.Mutex
-		hooks.switchable(func(switchCtx context.Context) error {
-			switching.Lock()
-			defer switching.Unlock()
-			return switchCaptureSource(ctx, switchCtx, preparation, broadcast, startedWidth, startedHeight, startedCodec)
-		})
+	ready := func() {
+		if hooks.started != nil {
+			hooks.started()
+		}
+		if hooks.switchable != nil && preparation.CanSwitchSource() {
+			hooks.switchable(func(pickCtx context.Context) error { return switchSource(pickCtx, false) })
+		}
 	}
-	if err := session.StreamFrames(ctx, videoSink.AsCapture(), 0); err != nil && ctx.Err() == nil {
+	if preparation.CanSwitchSource() {
+		// The placeholder is streaming; now ask what to share.
+		go func() {
+			if hooks.status != nil {
+				hooks.status("Choosing what to share…")
+			}
+			if err := switchSource(ctx, true); err != nil {
+				cancel(err)
+				return
+			}
+			ready()
+		}()
+	} else {
+		ready()
+	}
+	err = session.StreamFrames(ctx, videoSink.AsCapture(), 0)
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	if err != nil && ctx.Err() == nil {
 		return fmt.Errorf("streaming: %w", err)
 	}
 	log.Println("stream ended")
@@ -300,14 +332,20 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 
 // switchCaptureSource shows the portal picker (cancellable with pickCtx) and
 // moves broadcast to a new encoder for the chosen source, with the running
-// canvas and codec so the receiver sees only a new keyframe. The encoder lives
-// until the session ctx ends.
-func switchCaptureSource(ctx, pickCtx context.Context, preparation *sender.CapturePreparation, broadcast *sender.BroadcastCapture, width, height int, codec sender.VideoCodec) error {
-	next, err := preparation.PrepareSourceSwitch(pickCtx)
+// canvas and codec so the receiver sees only a new keyframe. The current
+// source fades to black first and the new one fades in. The encoder lives
+// until the session ctx ends. restore lets -remember-source skip the picker.
+func switchCaptureSource(ctx, pickCtx context.Context, preparation *sender.CapturePreparation, broadcast *sender.BroadcastCapture, width, height int, codec sender.VideoCodec, restore bool) error {
+	next, err := preparation.PrepareSource(pickCtx, restore)
 	if err != nil {
 		return fmt.Errorf("choose what to share: %w", err)
 	}
 	defer next.Close()
+	select {
+	case <-broadcast.Source().FadeOut():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	started, err := next.StartWithContextAndCodec(ctx, width, height, codec)
 	if err != nil {
 		return fmt.Errorf("start capture: %w", err)

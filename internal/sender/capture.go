@@ -38,6 +38,11 @@ type CaptureConfig struct {
 
 	ShowCursor bool // show the mouse cursor in the captured video (Wayland and X11)
 
+	// DeferSource leaves the Wayland portal alone during PrepareCapture: Start
+	// then streams a "choosing what to share" placeholder, and PrepareSource
+	// asks for the real source once the receiver is showing it.
+	DeferSource bool
+
 	// RestoreToken and SaveRestoreToken let the Wayland portal skip its source
 	// picker by reusing an earlier choice. With SaveRestoreToken nil the portal
 	// is asked not to persist the choice, so every capture prompts again.
@@ -93,6 +98,7 @@ type ScreenCapture struct {
 	cancel   context.CancelFunc
 	pwNodeID uint32
 	dbusConn *dbus.Conn    // portal session D-Bus connection (must stay open for Wayland)
+	fader    *videoFader   // fade overlay input; nil without one
 	waitCh   chan struct{} // closed when process exits
 	waitErr  error         // set before waitCh is closed
 	stopped  bool
@@ -214,6 +220,9 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 	if err := exec.Command("gst-inspect-1.0", "pipewiresrc").Run(); err != nil {
 		return nil, fmt.Errorf("GStreamer 'pipewiresrc' plugin not found; install gst-pipewire")
 	}
+	if cfg.DeferSource {
+		return preparation, nil
+	}
 	if err := preparation.requestPortalSource(ctx, cfg.RestoreToken); err != nil {
 		return nil, err
 	}
@@ -247,16 +256,21 @@ func (p *CapturePreparation) CanSwitchSource() bool {
 	return p != nil && p.kind == capturePreparationWayland
 }
 
-// PrepareSourceSwitch shows the screencast portal's picker again, ignoring any
-// restore token, and returns a preparation for the chosen source with p's
-// settings. It skips the encoder preflight PrepareCapture already ran. Start
-// the result with the running capture's canvas and codec, then hand it to
+// PrepareSource shows the screencast portal's picker and returns a preparation
+// for the chosen source with p's settings. restore lets a saved restore token
+// (-remember-source) skip the picker; a mid-session switch passes false. It
+// skips the encoder preflight PrepareCapture already ran. Start the result
+// with the running capture's canvas and codec, then hand it to
 // BroadcastCapture.SwitchSource.
-func (p *CapturePreparation) PrepareSourceSwitch(ctx context.Context) (*CapturePreparation, error) {
+func (p *CapturePreparation) PrepareSource(ctx context.Context, restore bool) (*CapturePreparation, error) {
 	if !p.CanSwitchSource() {
 		return nil, fmt.Errorf("capture source can only be switched through the Wayland screencast portal")
 	}
 	p.mu.Lock()
+	restoreToken := ""
+	if restore {
+		restoreToken = p.cfg.RestoreToken
+	}
 	next := &CapturePreparation{
 		ctx:                  ctx,
 		cfg:                  p.cfg,
@@ -266,7 +280,8 @@ func (p *CapturePreparation) PrepareSourceSwitch(ctx context.Context) (*CaptureP
 		measuredVideoLatency: p.measuredVideoLatency,
 	}
 	p.mu.Unlock()
-	if err := next.requestPortalSource(ctx, ""); err != nil {
+	next.cfg.DeferSource = false
+	if err := next.requestPortalSource(ctx, restoreToken); err != nil {
 		return nil, err
 	}
 	return next, nil
@@ -428,6 +443,9 @@ func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, 
 
 	switch kind {
 	case capturePreparationWayland:
+		if cfg.DeferSource {
+			return startPlaceholderCapture(ctx, cfg, encoder, timestampedOutput)
+		}
 		return startPreparedWaylandCapture(ctx, cfg, encoder, nodeID, pwFd, dbusConn, streamSize, timestampedOutput)
 	case capturePreparationX11:
 		return startPreparedX11Capture(ctx, cfg, encoder, timestampedOutput)
@@ -953,8 +971,24 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 
 	var afterScale []gstStage
 	maxWidth, maxHeight := cfg.MaxWidth, cfg.MaxHeight
+	// The content fades in from black once the pipeline runs (see
+	// capture_fade.go); without the compositor it simply appears.
+	var fader *videoFader
+	var overlay *os.File
+	const overlayFdNum = 4
 	if hasCompositor {
-		beforeConvert = append(beforeConvert, waylandCompositorStages(streamSize, maxWidth, maxHeight, fps)...)
+		stages := waylandCompositorStages(streamSize, maxWidth, maxHeight, fps)
+		canvasWidth, canvasHeight := maxWidth&^1, maxHeight&^1
+		if canvasWidth <= 0 || canvasHeight <= 0 {
+			canvasWidth, canvasHeight = streamSize[0]&^1, streamSize[1]&^1
+		}
+		var err error
+		if fader, overlay, err = newVideoFader(fps, max(1, fps/fadeHoldDiv), true); err != nil {
+			log.Printf("[CAPTURE] warning: %v; content will not fade in", err)
+		} else {
+			stages = withFadeOverlay(stages, canvasWidth, canvasHeight)
+		}
+		beforeConvert = append(beforeConvert, stages...)
 		// The frames were already fitted to the compositor canvas.
 		maxWidth, maxHeight = 0, 0
 	} else {
@@ -970,47 +1004,27 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 		)
 	}
 	gstArgs := buildGstVideoPipeline(source, beforeConvert, afterScale, encoderParts, maxWidth, maxHeight, timestampedOutput)
+	extraFiles := []*os.File{pwFd}
+	if overlay != nil {
+		gstArgs = append(gstArgs, fadeOverlayChain(overlayFdNum, fps)...)
+		extraFiles = append(extraFiles, overlay)
+		defer overlay.Close() // the child inherits it
+	}
 
 	dbg("[CAPTURE] gst-launch-1.0 (wayland) %s", strings.Join(gstArgs, " "))
 	cmd := exec.CommandContext(captureCtx, "gst-launch-1.0", gstArgs...)
-	cmd.ExtraFiles = []*os.File{pwFd}
+	cmd.ExtraFiles = extraFiles
 
-	stdout, err := cmd.StdoutPipe()
+	capture, err := startCaptureCommand(cmd, cancel, encoderParts.codec, timestampedOutput)
+	pwFd.Close() // the child inherited it
 	if err != nil {
-		cancel()
-		pwFd.Close()
+		fader.Close()
 		dbusConn.Close()
-		return nil, fmt.Errorf("gst stdout pipe: %w", err)
+		return nil, err
 	}
-	stderr, _ := cmd.StderrPipe()
-
-	waitResult, err := startGStreamerCommand(cmd)
-	if err != nil {
-		cancel()
-		pwFd.Close()
-		dbusConn.Close()
-		return nil, fmt.Errorf("start gst-launch: %w", err)
-	}
-	pwFd.Close() // child inherited it
-
-	go logStderr("GST", stderr)
-
-	capture := &ScreenCapture{
-		cmd:      cmd,
-		stdout:   stdout,
-		cancel:   cancel,
-		pwNodeID: nodeID,
-		dbusConn: dbusConn,
-		waitCh:   make(chan struct{}),
-	}
-	if timestampedOutput {
-		capture.frames = newRTPVideoAccessUnitReader(stdout, encoderParts.codec)
-	}
-	go func() {
-		capture.waitErr = <-waitResult
-		close(capture.waitCh)
-	}()
-
+	capture.pwNodeID = nodeID
+	capture.dbusConn = dbusConn
+	capture.fader = fader
 	return capture, nil
 }
 
@@ -1122,11 +1136,19 @@ func (sc *ScreenCapture) ReadVideoAccessUnit() (VideoAccessUnit, error) {
 	return sc.frames.ReadVideoAccessUnit()
 }
 
+// FadeOut fades the capture to black and returns a channel closed once black
+// has been encoded. The channel is closed at once for a capture that cannot
+// fade (X11, test, or content whose fade-in has finished), which then cuts.
+func (sc *ScreenCapture) FadeOut() <-chan struct{} {
+	return sc.fader.fadeOut()
+}
+
 func (sc *ScreenCapture) Stop() {
 	if sc.stopped {
 		return
 	}
 	sc.stopped = true
+	sc.fader.Close()
 	if sc.cancel != nil {
 		sc.cancel()
 	}

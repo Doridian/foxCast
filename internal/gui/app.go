@@ -456,7 +456,7 @@ func (a *app) finished(s *session, err error, stopped bool) {
 	a.update()
 	name := s.receiver.Name
 	switch {
-	case err != nil && !stopped && !errors.Is(err, ErrCancelled):
+	case err != nil && !stopped && !errors.Is(err, ErrCancelled) && !errors.Is(err, sender.ErrPortalCancelled):
 		log.Printf("%s: %v", name, err)
 		what := "Mirroring to " + name + " failed"
 		if s.kind != sessionMirror {

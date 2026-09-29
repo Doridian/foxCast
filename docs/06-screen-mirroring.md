@@ -137,14 +137,37 @@ sent, so the picker appears for every mirror session, as on macOS.
 receiver in the credential store and sent with the next request, which skips
 the picker. Both options need ScreenCast portal version 4 or newer.
 
-The tray app can change the source mid-session ("Change…" next to "Stop").
-It opens a new portal session (always without a restore token) and starts a
-second encoder with the running canvas and codec, then
-`BroadcastCapture.SwitchSource` swaps it in and stops the old one. The
-receiver sees the new encoder's first IDR right after the old encoder's last
-frame. `StreamFrames` re-sends the codec frame only when the parameter sets
-changed, and frame timestamps stay monotonic across the swap. Dismissing the
-picker keeps the current source.
+As on macOS, foxCast pairs and completes SETUP before asking what to share.
+The first encoder (`CaptureConfig.DeferSource`) streams a "Choosing what to
+share…" placeholder (`videotestsrc` plus `textoverlay`), and the portal picker
+opens once the receiver is showing it. This also keeps the picker outside the
+receiver's first-frame deadline. Dismissing the first picker ends the session.
+
+Every source change, the first one included, works the same way.
+`PrepareSource` opens a new portal session. A mid-session change always
+leaves out the restore token. The current source then fades to black. A
+second encoder starts with the running canvas and codec, and
+`BroadcastCapture.SwitchSource` swaps it in and stops the old one. The new
+source holds black for ½ s and then fades in. The receiver sees the new
+encoder's first IDR right after the old encoder's last frame. `StreamFrames`
+re-sends the codec frame only when the parameter sets changed, and frame
+timestamps stay monotonic across the swap. The tray app offers mid-session
+changes ("Change…" next to "Stop"). Dismissing that picker keeps the current
+source.
+
+Fades use a second compositor input because `gst-launch` cannot animate
+element properties. foxCast writes 32×32 black BGRA frames, each with the
+current alpha, to a pipe (`fdsrc ! rawvideoparse ! fade.sink_1`), and the
+compositor scales them over the canvas. rawvideoparse timestamps frames by
+index, and the pipe is shrunk to one 4 KiB frame with `F_SETPIPE_SZ`. Writes
+therefore block at the frame rate, and the overlay stays a few frames ahead of
+the picture. Once the content has faded in, foxCast closes the pipe and the
+compositor drops the input. The content then has no overlay, so a later
+change cuts to black before the new source fades in. A source without the
+compositor, or an X11 source, cuts instead of fading.
+
+For HEVC without `-target-latency-ms`, the capture latency probe now measures
+the placeholder encoder rather than the screen.
 
 A window source changes size when the window is resized. The fixed-size
 `videoscale add-borders=true` stage in front of the encoder letterboxes it

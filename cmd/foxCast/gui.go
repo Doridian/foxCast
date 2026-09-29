@@ -94,6 +94,7 @@ func (b *guiBackend) connectOptions(r *gui.Receiver, prompt gui.Prompter, cb gui
 func (b *guiBackend) Mirror(ctx context.Context, r *gui.Receiver, prompt gui.Prompter, cb gui.Callbacks) error {
 	cb.Status("Connecting…")
 	return runMirror(ctx, b.connectOptions(r, prompt, cb), &b.mirror, mirrorHooks{
+		status:     cb.Status,
 		started:    cb.Started,
 		switchable: cb.SourceSwitchable,
 	})
