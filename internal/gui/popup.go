@@ -35,6 +35,7 @@ type popup struct {
 	search  *qt.QLineEdit
 	refresh *qt.QToolButton
 	status  *qt.QLabel
+	scroll  *qt.QScrollArea
 	list    *qt.QVBoxLayout
 
 	expanded    string
@@ -120,6 +121,7 @@ func newPopup(a *app, anchored bool) *popup {
 	p.list.SetSpacing(2)
 	scroll.SetWidget(content)
 	layout.AddWidget2(scroll.QWidget, 1)
+	p.scroll = scroll
 
 	p.w.OnKeyPressEvent(func(super func(*qt.QKeyEvent), event *qt.QKeyEvent) {
 		if p.anchored && event.Key() == int(qt.Key_Escape) {
@@ -179,6 +181,10 @@ func (p *popup) toggleAt(x, y int32, activationToken string) {
 func (p *popup) present() {
 	if p.anchored {
 		p.place(p.lastX, p.lastY)
+	}
+	// Open at the top, where receivers in use are listed.
+	if !p.w.IsVisible() {
+		p.scroll.VerticalScrollBar().SetValue(0)
 	}
 	p.w.Show()
 	p.w.Raise()

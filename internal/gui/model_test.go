@@ -2,8 +2,8 @@ package gui
 
 import (
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,12 +175,12 @@ func TestGroupReceivers(t *testing.T) {
 		{AirPlayDevice: sender.AirPlayDevice{Name: "Kitchen", DeviceID: "3", Features: video}},
 		{AirPlayDevice: sender.AirPlayDevice{Name: "Living Room TV", DeviceID: "4", Features: video}},
 	}
-	paired := func(r *Receiver) bool { return r.DeviceID == "4" }
-	inUse := func(r *Receiver) bool { return r.DeviceID == "3" }
+	paired := func(r *Receiver) bool { return r.DeviceID == "3" || r.DeviceID == "4" }
+	inUse := func(r *Receiver) bool { return r.DeviceID == "4" }
 
 	known, other := groupReceivers(rs, paired, inUse, "")
-	if names(known) != "Kitchen,Living Room TV" {
-		t.Errorf("known = %s", names(known))
+	if names(known) != "Living Room TV,Kitchen" {
+		t.Errorf("known = %s (receivers in use belong first)", names(known))
 	}
 	if names(other) != "Bedroom HomePod,Den TV,Car" {
 		t.Errorf("other = %s (unusable receivers belong last)", names(other))

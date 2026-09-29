@@ -197,16 +197,18 @@ func (l *receiverList) deviceIDs() []string {
 }
 
 // groupReceivers splits rs (already sorted) for display, like known and
-// available networks: receivers that are paired or in use first, then the
-// rest, with ones foxCast cannot use last. Only receivers
-// matching query are kept.
+// available networks: receivers that are in use or paired first (in use at
+// the very top, like a connected network), then the rest, with ones foxCast
+// cannot use last. Only receivers matching query are kept.
 func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query string) (known, other []Receiver) {
-	var unusable []Receiver
+	var active, unusable []Receiver
 	for i := range rs {
 		r := &rs[i]
 		switch {
 		case !matchesQuery(r, query):
-		case paired(r) || inUse(r):
+		case inUse(r):
+			active = append(active, *r)
+		case paired(r):
 			known = append(known, *r)
 		case r.Usable():
 			other = append(other, *r)
@@ -214,7 +216,7 @@ func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query str
 			unusable = append(unusable, *r)
 		}
 	}
-	return known, append(other, unusable...)
+	return append(active, known...), append(other, unusable...)
 }
 
 // matchesQuery reports whether r's name, model or address contains query,
