@@ -354,6 +354,13 @@ func (p *popup) addRow(r Receiver, paired bool) {
 
 	switch {
 	case s != nil:
+		if s.switchSource != nil {
+			change := qt.NewQPushButton4(qt.QIcon_FromTheme(iconSwitch), "Change…")
+			change.SetToolTip("Choose a different screen or window to share")
+			change.SetEnabled(s.canSwitchSource())
+			change.OnClicked(func() { a.switchSource(r) })
+			top.AddWidget(change.QWidget)
+		}
 		stop := qt.NewQPushButton4(qt.QIcon_FromTheme(iconStop), "Stop")
 		stop.SetEnabled(!s.stopping)
 		stop.OnClicked(func() { a.stop(r) })

@@ -842,3 +842,92 @@ func TestBroadcastCaptureClosesSinkAddedAfterSourceStops(t *testing.T) {
 		t.Fatal("sink added after capture stop remained open")
 	}
 }
+
+// stoppableVideoReader serves frames until its capture is stopped.
+type stoppableVideoReader struct {
+	frames chan VideoAccessUnit
+	closed chan struct{}
+	waitCh chan struct{}
+}
+
+func newStoppableCapture() (*ScreenCapture, chan VideoAccessUnit) {
+	r := &stoppableVideoReader{
+		frames: make(chan VideoAccessUnit),
+		closed: make(chan struct{}),
+		waitCh: make(chan struct{}),
+	}
+	return &ScreenCapture{stdout: r, frames: r, waitCh: r.waitCh}, r.frames
+}
+
+func (r *stoppableVideoReader) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (r *stoppableVideoReader) ReadVideoAccessUnit() (VideoAccessUnit, error) {
+	select {
+	case frame := <-r.frames:
+		return frame, nil
+	case <-r.closed:
+		return VideoAccessUnit{}, io.EOF
+	}
+}
+
+func (r *stoppableVideoReader) Close() error {
+	close(r.closed)
+	close(r.waitCh)
+	return nil
+}
+
+func TestBroadcastCaptureSwitchSourceContinuesWithNewCapture(t *testing.T) {
+	first, firstFrames := newStoppableCapture()
+	second, secondFrames := newStoppableCapture()
+	broadcast := NewBroadcastCapture(first)
+	sink, err := broadcast.AddBackpressuredSink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := sink.AsCapture()
+	runDone := make(chan error, 1)
+	go func() { runDone <- broadcast.Run() }()
+
+	read := func(want byte) {
+		t.Helper()
+		frame, err := reader.ReadVideoAccessUnit()
+		if err != nil || len(frame.AnnexB) != 1 || frame.AnnexB[0] != want {
+			t.Fatalf("read = (%x, %v), want %02x", frame.AnnexB, err, want)
+		}
+	}
+	firstFrames <- VideoAccessUnit{AnnexB: []byte{1}}
+	read(1)
+
+	if err := broadcast.SwitchSource(second); err != nil {
+		t.Fatalf("SwitchSource: %v", err)
+	}
+	if !first.stopped {
+		t.Fatal("SwitchSource left the previous capture running")
+	}
+	if broadcast.Source() != second {
+		t.Fatal("Source did not report the new capture")
+	}
+	secondFrames <- VideoAccessUnit{AnnexB: []byte{2}}
+	read(2)
+
+	broadcast.StopSource()
+	if frame, err := reader.ReadVideoAccessUnit(); len(frame.AnnexB) != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("read after StopSource = (%x, %v), want EOF", frame.AnnexB, err)
+	}
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("broadcast run = %v, want EOF", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("broadcast did not finish after StopSource")
+	}
+
+	third, _ := newStoppableCapture()
+	if err := broadcast.SwitchSource(third); !errors.Is(err, errBroadcastSourceStopped) {
+		t.Fatalf("SwitchSource after StopSource = %v, want %v", err, errBroadcastSourceStopped)
+	}
+	if !third.stopped {
+		t.Fatal("rejected replacement capture was left running")
+	}
+}

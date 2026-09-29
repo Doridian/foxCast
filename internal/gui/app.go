@@ -14,6 +14,8 @@ import (
 
 	qt "github.com/mappu/miqt/qt6"
 	"github.com/mappu/miqt/qt6/mainthread"
+
+	"git.foxden.network/FoxDen/foxCast/internal/sender"
 )
 
 const (
@@ -27,6 +29,7 @@ const (
 	iconActive  = "media-playback-playing"
 	iconSpeaker = "audio-speakers"
 	iconMirror  = "video-display"
+	iconSwitch  = "window-duplicate"
 	iconFile    = "document-open"
 	iconURL     = "insert-link"
 	iconStop    = "media-playback-stop"
@@ -55,8 +58,13 @@ type session struct {
 	status   string
 	started  bool
 	stopping bool
-	cancel   context.CancelFunc
-	done     chan struct{}
+	// switchSource, when set, picks a new screen or window for a running
+	// mirror; switching is true while its picker is open.
+	switchSource func(context.Context) error
+	switching    bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
 }
 
 // describe is the session's state as shown next to its receiver.
@@ -66,6 +74,8 @@ func (s *session) describe() string {
 		return "Stopping…"
 	case !s.started:
 		return s.status
+	case s.switching:
+		return "Choosing what to share…"
 	case s.kind == sessionMirror:
 		return "Mirroring screen"
 	case s.kind == sessionAudio:
@@ -296,6 +306,36 @@ func (a *app) stop(r Receiver) {
 	a.update()
 }
 
+// canSwitchSource reports whether s can move to another screen or window now.
+func (s *session) canSwitchSource() bool {
+	return s != nil && s.switchSource != nil && !s.switching && !s.stopping
+}
+
+// switchSource lets the user pick a new screen or window for r's mirror.
+func (a *app) switchSource(r Receiver) {
+	s := a.session(&r)
+	if !s.canSwitchSource() {
+		return
+	}
+	// Keep the popup from covering the portal's picker.
+	if a.popup.anchored {
+		a.popup.hide()
+	}
+	s.switching = true
+	a.update()
+	go func() {
+		err := s.switchSource(s.ctx)
+		mainthread.Start(func() {
+			s.switching = false
+			a.update()
+			if err != nil && s.ctx.Err() == nil && !errors.Is(err, sender.ErrPortalCancelled) {
+				log.Printf("%s: %v", s.receiver.Name, err)
+				a.notify(iconError, "Could not change what is shared with "+s.receiver.Name, errorText(err))
+			}
+		})
+	}()
+}
+
 // forget deletes r's saved pairing.
 func (a *app) forget(r Receiver) {
 	if r.DeviceID == "" {
@@ -327,6 +367,7 @@ func (a *app) start(r Receiver, kind sessionKind, location string) {
 		kind:     kind,
 		title:    mediaTitle(location),
 		status:   "Starting…",
+		ctx:      ctx,
 		cancel:   cancel,
 		done:     make(chan struct{}),
 	}
@@ -365,6 +406,14 @@ func (a *app) start(r Receiver, kind sessionKind, location string) {
 				}
 			})
 		},
+	}
+	if kind == sessionMirror {
+		cb.SourceSwitchable = func(switchSource func(context.Context) error) {
+			mainthread.Start(func() {
+				s.switchSource = switchSource
+				a.update()
+			})
+		}
 	}
 	prompt := func(ctx context.Context, receiver string, kind CredentialKind) (string, error) {
 		status("Waiting for pairing code…")
@@ -516,6 +565,9 @@ func (a *app) updateTray() {
 				text = "Stop Playing on " + r.Name
 			}
 			items = append(items, trayMenuItem{label: text, icon: iconStop, action: onMain(func() { a.stop(r) })})
+			if s.switchSource != nil {
+				items = append(items, trayMenuItem{label: "Change What's Shared with " + r.Name + "…", icon: iconSwitch, disabled: !s.canSwitchSource(), action: onMain(func() { a.switchSource(r) })})
+			}
 		case s == nil && a.isPaired(&r) && r.CanMirror():
 			items = append(items, trayMenuItem{label: "Mirror to " + r.Name, icon: iconMirror, action: onMain(func() { a.mirror(r) })})
 		case s == nil && a.isPaired(&r) && r.CanStreamAudio() && !r.CanPlay():

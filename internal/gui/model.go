@@ -97,6 +97,10 @@ type Callbacks struct {
 	Connected func(name, model, deviceID string)
 	// Started runs once media or frames reach the receiver.
 	Started func()
+	// SourceSwitchable hands over a function that asks the user for a new
+	// screen or window and switches a running mirror session to it. It is
+	// only called when the capture can offer that choice.
+	SourceSwitchable func(switchSource func(context.Context) error)
 }
 
 // Backend performs the receiver work the GUI triggers. Mirror and Play block

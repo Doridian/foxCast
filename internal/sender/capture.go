@@ -3,6 +3,7 @@ package sender
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -66,10 +67,18 @@ const (
 	testCaptureHeight = 1080
 )
 
-// xdg-desktop-portal ScreenCast source types and persist modes.
+// ErrPortalCancelled is returned when the user dismisses the screencast
+// portal's picker.
+var ErrPortalCancelled = errors.New("screen sharing was cancelled")
+
+// xdg-desktop-portal Request response codes, and ScreenCast source types and
+// persist modes.
 const (
 	portalSourceMonitor uint32 = 1
 	portalSourceWindow  uint32 = 2
+
+	portalResponseSuccess   uint32 = 0
+	portalResponseCancelled uint32 = 1
 
 	portalPersistNone       uint32 = 0
 	portalPersistPermanent  uint32 = 2
@@ -205,20 +214,62 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 	if err := exec.Command("gst-inspect-1.0", "pipewiresrc").Run(); err != nil {
 		return nil, fmt.Errorf("GStreamer 'pipewiresrc' plugin not found; install gst-pipewire")
 	}
-	nodeID, pwFd, dbusConn, restoreToken, err := requestScreencast(ctx, cfg.RestoreToken, cfg.SaveRestoreToken != nil, cfg.ShowCursor, &preparation.streamSize)
-	if err != nil {
-		return nil, fmt.Errorf("screencast portal: %w", err)
+	if err := preparation.requestPortalSource(ctx, cfg.RestoreToken); err != nil {
+		return nil, err
 	}
-	if restoreToken != "" && cfg.SaveRestoreToken != nil {
-		if err := cfg.SaveRestoreToken(restoreToken); err != nil {
+	return preparation, nil
+}
+
+// requestPortalSource asks the screencast portal for a source and keeps its
+// PipeWire connection for Start.
+func (p *CapturePreparation) requestPortalSource(ctx context.Context, restoreToken string) error {
+	cfg := p.cfg
+	nodeID, pwFd, dbusConn, newToken, err := requestScreencast(ctx, restoreToken, cfg.SaveRestoreToken != nil, cfg.ShowCursor, &p.streamSize)
+	if err != nil {
+		return fmt.Errorf("screencast portal: %w", err)
+	}
+	if newToken != "" && cfg.SaveRestoreToken != nil {
+		if err := cfg.SaveRestoreToken(newToken); err != nil {
 			log.Printf("[CAPTURE] warning: failed to save screencast restore token: %v", err)
 		}
 	}
 	dbg("pipewire node ID: %d", nodeID)
-	preparation.pwNodeID = nodeID
-	preparation.pwFd = pwFd
-	preparation.dbusConn = dbusConn
-	return preparation, nil
+	p.pwNodeID = nodeID
+	p.pwFd = pwFd
+	p.dbusConn = dbusConn
+	return nil
+}
+
+// CanSwitchSource reports whether PrepareSourceSwitch can offer a different
+// source. Only the Wayland portal has a picker; X11 and test captures always
+// capture the same thing.
+func (p *CapturePreparation) CanSwitchSource() bool {
+	return p != nil && p.kind == capturePreparationWayland
+}
+
+// PrepareSourceSwitch shows the screencast portal's picker again, ignoring any
+// restore token, and returns a preparation for the chosen source with p's
+// settings. It skips the encoder preflight PrepareCapture already ran. Start
+// the result with the running capture's canvas and codec, then hand it to
+// BroadcastCapture.SwitchSource.
+func (p *CapturePreparation) PrepareSourceSwitch(ctx context.Context) (*CapturePreparation, error) {
+	if !p.CanSwitchSource() {
+		return nil, fmt.Errorf("capture source can only be switched through the Wayland screencast portal")
+	}
+	p.mu.Lock()
+	next := &CapturePreparation{
+		ctx:                  ctx,
+		cfg:                  p.cfg,
+		kind:                 p.kind,
+		timestampedOutput:    p.timestampedOutput,
+		automaticHEVCAvail:   p.automaticHEVCAvail,
+		measuredVideoLatency: p.measuredVideoLatency,
+	}
+	p.mu.Unlock()
+	if err := next.requestPortalSource(ctx, ""); err != nil {
+		return nil, err
+	}
+	return next, nil
 }
 
 // PrepareTestCapture validates a synthetic capture without starting its
@@ -1793,7 +1844,10 @@ func waitForResponseWithResult(ctx context.Context, conn *dbus.Conn, requestHand
 			if !ok {
 				return nil, fmt.Errorf("unexpected status type")
 			}
-			if status != 0 {
+			if status == portalResponseCancelled {
+				return nil, ErrPortalCancelled
+			}
+			if status != portalResponseSuccess {
 				return nil, fmt.Errorf("portal request failed with status %d", status)
 			}
 			result, ok := sig.Body[1].(map[string]dbus.Variant)

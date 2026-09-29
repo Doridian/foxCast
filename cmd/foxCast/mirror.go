@@ -11,6 +11,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"git.foxden.network/FoxDen/foxCast/internal/sender"
@@ -95,12 +96,24 @@ func cmdMirror(ctx context.Context, args []string) error {
 	if err := opts.finish(mirrorUDPPorts); err != nil {
 		return err
 	}
-	return runMirror(ctx, &opts, &mo, nil)
+	return runMirror(ctx, &opts, &mo, mirrorHooks{})
+}
+
+// mirrorHooks lets the GUI follow and steer a mirror session.
+type mirrorHooks struct {
+	// started, when set, runs once frames (or audio) flow.
+	started func()
+	// switchable, when set, receives a function that asks for a new capture
+	// source and switches the running session to it. It is only called when
+	// the capture can offer a choice (the Wayland portal). switchSource blocks
+	// while the picker is open, and fails, leaving the current source in
+	// place, if the picker is dismissed.
+	switchable func(switchSource func(context.Context) error)
 }
 
 // runMirror connects to a receiver and mirrors the screen to it until ctx is
-// cancelled or the stream ends. onStarted, when set, runs once frames flow.
-func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onStarted func()) error {
+// cancelled or the stream ends.
+func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hooks mirrorHooks) error {
 	conn, err := connect(ctx, opts, true)
 	if err != nil {
 		return err
@@ -116,7 +129,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 		audioOnly = true
 	}
 	if audioOnly {
-		return runSpeaker(ctx, conn, opts, mo, onStarted)
+		return runSpeaker(ctx, conn, opts, mo, hooks.started)
 	}
 
 	streamCfg := sender.StreamConfig{
@@ -202,7 +215,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 	defer func() {
 		preparation.Close()
 		if capture != nil {
-			capture.Stop()
+			broadcast.StopSource()
 			<-broadcastDone
 		}
 	}()
@@ -236,7 +249,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 
 	go func() {
 		<-ctx.Done()
-		capture.Stop()
+		broadcast.StopSource()
 		session.Close()
 	}()
 
@@ -267,13 +280,42 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 		return fmt.Errorf("attach video capture: %w", err)
 	}
 	defer videoSink.Close()
-	if onStarted != nil {
-		onStarted()
+	if hooks.started != nil {
+		hooks.started()
+	}
+	if hooks.switchable != nil && preparation.CanSwitchSource() {
+		var switching sync.Mutex
+		hooks.switchable(func(switchCtx context.Context) error {
+			switching.Lock()
+			defer switching.Unlock()
+			return switchCaptureSource(ctx, switchCtx, preparation, broadcast, startedWidth, startedHeight, startedCodec)
+		})
 	}
 	if err := session.StreamFrames(ctx, videoSink.AsCapture(), 0); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("streaming: %w", err)
 	}
 	log.Println("stream ended")
+	return nil
+}
+
+// switchCaptureSource shows the portal picker (cancellable with pickCtx) and
+// moves broadcast to a new encoder for the chosen source, with the running
+// canvas and codec so the receiver sees only a new keyframe. The encoder lives
+// until the session ctx ends.
+func switchCaptureSource(ctx, pickCtx context.Context, preparation *sender.CapturePreparation, broadcast *sender.BroadcastCapture, width, height int, codec sender.VideoCodec) error {
+	next, err := preparation.PrepareSourceSwitch(pickCtx)
+	if err != nil {
+		return fmt.Errorf("choose what to share: %w", err)
+	}
+	defer next.Close()
+	started, err := next.StartWithContextAndCodec(ctx, width, height, codec)
+	if err != nil {
+		return fmt.Errorf("start capture: %w", err)
+	}
+	if err := broadcast.SwitchSource(started); err != nil {
+		return err
+	}
+	log.Printf("switched screen capture source")
 	return nil
 }
 

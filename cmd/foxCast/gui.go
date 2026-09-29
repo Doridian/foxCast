@@ -93,14 +93,17 @@ func (b *guiBackend) connectOptions(r *gui.Receiver, prompt gui.Prompter, cb gui
 
 func (b *guiBackend) Mirror(ctx context.Context, r *gui.Receiver, prompt gui.Prompter, cb gui.Callbacks) error {
 	cb.Status("Connecting…")
-	return runMirror(ctx, b.connectOptions(r, prompt, cb), &b.mirror, cb.Started)
+	return runMirror(ctx, b.connectOptions(r, prompt, cb), &b.mirror, mirrorHooks{
+		started:    cb.Started,
+		switchable: cb.SourceSwitchable,
+	})
 }
 
 func (b *guiBackend) StreamAudio(ctx context.Context, r *gui.Receiver, prompt gui.Prompter, cb gui.Callbacks) error {
 	cb.Status("Connecting…")
 	mo := b.mirror
 	mo.audioOnly, mo.noAudio = true, false
-	return runMirror(ctx, b.connectOptions(r, prompt, cb), &mo, cb.Started)
+	return runMirror(ctx, b.connectOptions(r, prompt, cb), &mo, mirrorHooks{started: cb.Started})
 }
 
 func (b *guiBackend) Play(ctx context.Context, r *gui.Receiver, location string, prompt gui.Prompter, cb gui.Callbacks) error {

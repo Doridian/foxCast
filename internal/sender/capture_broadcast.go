@@ -26,6 +26,8 @@ const (
 
 var errBroadcastSinkBacklog = errors.New("broadcast sink backlog limit exceeded")
 var errBroadcastSinkMode = errors.New("backpressured broadcast sink requires an otherwise unused capture")
+var errBroadcastSourceStopped = errors.New("broadcast capture source has stopped")
+var errBroadcastSourceKind = errors.New("replacement capture must match the broadcast's framing")
 
 // BroadcastCapture reads from a single ScreenCapture and fans the raw byte
 // stream out to multiple registered sinks. Each sink has an independent,
@@ -40,8 +42,12 @@ var errBroadcastSinkMode = errors.New("backpressured broadcast sink requires an 
 //	go session1.StreamFrames(ctx, sink1.AsCapture(), 0)
 //	go session2.StreamFrames(ctx, sink2.AsCapture(), 0)
 type BroadcastCapture struct {
-	src    *ScreenCapture
+	src    *ScreenCapture // guarded by mu; replaced by SwitchSource
 	frames bool
+	// sourceMu serializes stopping and replacing sources, so each capture is
+	// stopped exactly once. sourceStopped is guarded by it.
+	sourceMu      sync.Mutex
+	sourceStopped bool
 	// frameDuration is the configured source cadence, not the difference between
 	// adjacent PTS values. A leaky upstream queue can legitimately create large
 	// PTS gaps while only one encoded picture is pending.
@@ -220,9 +226,10 @@ func (bc *BroadcastCapture) Run() error {
 		bc.mu.Lock()
 		bc.sequence++
 		sequence := bc.sequence
+		src := bc.src
 		bc.mu.Unlock()
 
-		n, readErr := bc.src.Read(buf)
+		n, readErr := src.Read(buf)
 		if n > 0 {
 			bc.mu.Lock()
 			sinks := make([]*BroadcastSink, 0, len(bc.sinks))
@@ -247,6 +254,9 @@ func (bc *BroadcastCapture) Run() error {
 			}
 		}
 		if readErr != nil {
+			if bc.switched(src) {
+				continue
+			}
 			bc.finish(readErr)
 			return readErr
 		}
@@ -261,9 +271,10 @@ func (bc *BroadcastCapture) runFrames() error {
 		bc.mu.Lock()
 		bc.sequence++
 		sequence := bc.sequence
+		src := bc.src
 		bc.mu.Unlock()
 
-		frame, readErr := bc.src.ReadVideoAccessUnit()
+		frame, readErr := src.ReadVideoAccessUnit()
 		if len(frame.AnnexB) > 0 {
 			bc.mu.Lock()
 			sinks := make([]*BroadcastSink, 0, len(bc.sinks))
@@ -281,10 +292,62 @@ func (bc *BroadcastCapture) runFrames() error {
 			}
 		}
 		if readErr != nil {
+			if bc.switched(src) {
+				continue
+			}
 			bc.finish(readErr)
 			return readErr
 		}
 	}
+}
+
+// switched reports whether SwitchSource has replaced src, whose read just
+// ended, so Run continues with the new source instead of finishing.
+func (bc *BroadcastCapture) switched(src *ScreenCapture) bool {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.src != src
+}
+
+// SwitchSource replaces the capture Run reads from with next, which must
+// already be running with the same codec and canvas, and stops the previous
+// one. Sinks receive next's access units, starting with its first IDR and
+// parameter sets, right after the previous source's last one. next is stopped
+// and an error returned if the broadcast's source has already stopped.
+func (bc *BroadcastCapture) SwitchSource(next *ScreenCapture) error {
+	bc.sourceMu.Lock()
+	defer bc.sourceMu.Unlock()
+	if (next.frames != nil) != bc.frames {
+		next.Stop()
+		return errBroadcastSourceKind
+	}
+	bc.mu.Lock()
+	if bc.sourceStopped || bc.stopped {
+		bc.mu.Unlock()
+		next.Stop()
+		return errBroadcastSourceStopped
+	}
+	previous := bc.src
+	bc.src = next
+	bc.mu.Unlock()
+	previous.Stop()
+	return nil
+}
+
+// StopSource stops the current source, which ends Run once sinks drain, and
+// makes later SwitchSource calls fail. It is safe to call more than once and
+// concurrently with SwitchSource.
+func (bc *BroadcastCapture) StopSource() {
+	bc.sourceMu.Lock()
+	defer bc.sourceMu.Unlock()
+	if bc.sourceStopped {
+		return
+	}
+	bc.sourceStopped = true
+	bc.mu.Lock()
+	src := bc.src
+	bc.mu.Unlock()
+	src.Stop()
 }
 
 // finish stops accepting sinks, lets existing sinks drain, and only then
@@ -336,8 +399,10 @@ func (bc *BroadcastCapture) Err() error {
 	}
 }
 
-// Source returns the underlying ScreenCapture.
+// Source returns the current underlying ScreenCapture.
 func (bc *BroadcastCapture) Source() *ScreenCapture {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
 	return bc.src
 }
 

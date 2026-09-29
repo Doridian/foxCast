@@ -137,6 +137,15 @@ sent, so the picker appears for every mirror session, as on macOS.
 receiver in the credential store and sent with the next request, which skips
 the picker. Both options need ScreenCast portal version 4 or newer.
 
+The tray app can change the source mid-session ("Change…" next to "Stop").
+It opens a new portal session (always without a restore token) and starts a
+second encoder with the running canvas and codec, then
+`BroadcastCapture.SwitchSource` swaps it in and stops the old one. The
+receiver sees the new encoder's first IDR right after the old encoder's last
+frame. `StreamFrames` re-sends the codec frame only when the parameter sets
+changed, and frame timestamps stay monotonic across the swap. Dismissing the
+picker keeps the current source.
+
 A window source changes size when the window is resized. The fixed-size
 `videoscale add-borders=true` stage in front of the encoder letterboxes it
 into the receiver canvas, so the encoded size stays the same.
