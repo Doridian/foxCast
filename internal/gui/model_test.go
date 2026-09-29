@@ -23,8 +23,8 @@ func TestReceiverListMergesAndExpires(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "kitchen" || got[1].Name != "Living Room" {
 		t.Fatalf("receivers not sorted case-insensitively by name: %+v", got)
 	}
-	if got[0].CanMirror() || got[0].CanPlay() {
-		t.Fatal("audio-only receiver offered video actions")
+	if got[0].CanMirror() || got[0].CanPlay() || !got[0].CanStreamAudio() {
+		t.Fatal("audio-only receiver not offered audio alone")
 	}
 	if !got[1].CanMirror() || !got[1].CanPlay() {
 		t.Fatal("Apple TV not offered video actions")
@@ -170,6 +170,7 @@ func TestGroupReceivers(t *testing.T) {
 	video := sender.FeatureVideo | sender.FeatureScreen
 	rs := []Receiver{
 		{AirPlayDevice: sender.AirPlayDevice{Name: "Bedroom HomePod", DeviceID: "1", Features: sender.FeatureAudio}},
+		{AirPlayDevice: sender.AirPlayDevice{Name: "Car", DeviceID: "5"}},
 		{AirPlayDevice: sender.AirPlayDevice{Name: "Den TV", DeviceID: "2", Model: "AppleTV11,1", Features: video}},
 		{AirPlayDevice: sender.AirPlayDevice{Name: "Kitchen", DeviceID: "3", Features: video}},
 		{AirPlayDevice: sender.AirPlayDevice{Name: "Living Room TV", DeviceID: "4", Features: video}},
@@ -181,8 +182,8 @@ func TestGroupReceivers(t *testing.T) {
 	if names(known) != "Kitchen,Living Room TV" {
 		t.Errorf("known = %s", names(known))
 	}
-	if names(other) != "Den TV,Bedroom HomePod" {
-		t.Errorf("other = %s (audio-only receivers belong last)", names(other))
+	if names(other) != "Bedroom HomePod,Den TV,Car" {
+		t.Errorf("other = %s (unusable receivers belong last)", names(other))
 	}
 
 	known, other = groupReceivers(rs, paired, inUse, " appletv ")

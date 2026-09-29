@@ -283,3 +283,46 @@ Session: <session_id>
 
 ← 200 OK
 ```
+
+---
+
+## Audio-Only Sessions in foxCast (speakers)
+
+`foxCast mirror` uses a receiver as a speaker when it does not advertise screen
+mirroring (feature bit 7), or with `-audio-only`. `AirPlayClient.SetupAudioOnly`
+(`internal/sender/audio_session.go`) runs an AirPlay 2 realtime session with
+the same control-first ordering as screen mirroring:
+
+1. Session SETUP (no `streams`): the Initial SETUP above with
+   `isScreenMirroringSession: false`, `isMultiSelectAirPlay: false`,
+   `senderSupportsRelay: false` (as listed above), and `timingProtocol: "NTP"` with the sender's
+   `timingPort`. NTP is used even on receivers that offer PTP, as pyatv does
+   for audio. FairPlay root fields are added under the same rules as mirroring.
+2. Event channel to `eventPort`, then RECORD (unless `skipRecord`).
+3. Audio stream SETUP: one type 96 stream as above with `isMedia: true` (no
+   `usingScreen`), `latencyMin: 11025`, `latencyMax: 88200`, and the ALAC or
+   AAC-ELD descriptor chosen from `supportedFormats.audioStream` (ALAC when the
+   mask is absent). The descriptor layout (`controlPort` vs `streamConnections`,
+   feature 59), its one-shot alternate on rejection, and the ChaCha20 `shk` /
+   legacy AES keys are shared with mirror audio.
+4. RTP audio, TimeAnnounce sync packets and `/feedback` every 2 s, exactly as for
+   mirror audio, then TEARDOWN.
+
+Receivers that reject the control-only SETUP get the media-first form once:
+the session keys and the stream in one SETUP, followed by RECORD.
+
+Differences from mirror audio, and why:
+
+- **No video gate.** Streaming starts at once instead of waiting for the first
+  video frame.
+- **Playout lead 500 ms** (TimeAnnounce latency), not the 85 ms screen-audio
+  lead: there is no video to keep in step with, and speakers on Wi-Fi need room
+  for retransmits. `-target-latency-ms` overrides it, kept within
+  `latencyMin`–`latencyMax` (250 ms–2 s).
+- **Volume is not set.** Mirroring sends `volume: 0` (full scale), which would
+  play a speaker at maximum volume.
+
+Not yet verified on hardware; the flow is tested end to end against the
+in-process receiver (`-audio-only` on `foxCast-test-receiver`) for every
+receiver profile. AirPlay 1-only speakers (RAOP ANNOUNCE/SDP, e.g. older
+AirPort Express firmware) are not supported.

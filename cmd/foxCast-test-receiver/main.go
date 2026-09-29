@@ -31,6 +31,7 @@ func run(args []string) int {
 	name := flags.String("name", "", "receiver name advertised by /info (profile default when empty)")
 	model := flags.String("model", "", "receiver model advertised by /info (profile default when empty)")
 	deviceID := flags.String("device-id", "", "receiver device ID advertised by /info (random when empty)")
+	audioOnly := flags.Bool("audio-only", false, "act as a speaker: advertise no video or screen mirroring")
 	debug := flags.Bool("debug", false, "enable verbose receiver protocol logging")
 	statsInterval := flags.Duration("stats-interval", 0, "periodic statistics interval (0 disables periodic output)")
 	if err := flags.Parse(args); err != nil {
@@ -74,6 +75,7 @@ func run(args []string) int {
 		Name:          *name,
 		Model:         *model,
 		DeviceID:      *deviceID,
+		AudioOnly:     *audioOnly,
 		Logger:        logger,
 		Debug:         *debug,
 	})

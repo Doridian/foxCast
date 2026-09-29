@@ -22,6 +22,14 @@ const (
 	defaultAudioLatencyLow    = 50 * time.Millisecond
 	defaultAudioLatencyNormal = 85 * time.Millisecond
 	defaultAudioLatencyHigh   = 170 * time.Millisecond
+
+	// Audio-only (speaker) sessions advertise the realtime stream latency
+	// window from docs/04-audio-streaming.md (the values pyatv sends). There
+	// is no video to stay in step with, so the playout lead sits above the
+	// window's minimum to ride out Wi-Fi jitter on speakers.
+	speakerLatencyMinSamples   = 11025
+	speakerLatencyMaxSamples   = 88200
+	defaultSpeakerAudioLatency = 500 * time.Millisecond
 )
 
 type screenLatencyTargets struct {
@@ -115,4 +123,21 @@ func samplesFor44k1(d time.Duration) uint32 {
 		samples = math.MaxUint32
 	}
 	return uint32(samples)
+}
+
+// speakerLatencySamples is the playout lead of an audio-only session: the
+// explicit target latency when set, kept inside the advertised window.
+func speakerLatencySamples() uint32 {
+	samples := samplesFor44k1(defaultSpeakerAudioLatency)
+	if override := time.Duration(targetLatencyNS.Load()); override > 0 {
+		samples = samplesFor44k1(override)
+	}
+	// The package's own min shadows the builtin.
+	if samples < speakerLatencyMinSamples {
+		return speakerLatencyMinSamples
+	}
+	if samples > speakerLatencyMaxSamples {
+		return speakerLatencyMaxSamples
+	}
+	return samples
 }

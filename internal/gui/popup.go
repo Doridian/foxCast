@@ -310,7 +310,7 @@ func (p *popup) addRow(r Receiver, paired bool) {
 	s := a.session(&r)
 	key := r.Key()
 	expanded := p.expanded == key
-	usable := r.CanMirror() || r.CanPlay()
+	usable := r.Usable()
 
 	row := qt.NewQFrame2()
 	row.SetAttribute(qt.WA_Hover)
@@ -366,6 +366,11 @@ func (p *popup) addRow(r Receiver, paired bool) {
 		play := qt.NewQPushButton4(qt.QIcon_FromTheme(iconFile), "Play…")
 		play.OnClicked(func() { a.playFile(r) })
 		top.AddWidget(play.QWidget)
+	case r.CanStreamAudio():
+		sound := qt.NewQPushButton4(qt.QIcon_FromTheme(iconSpeaker), "Play Sound")
+		sound.SetToolTip("Play this computer's sound on " + r.Name)
+		sound.OnClicked(func() { a.streamAudio(r) })
+		top.AddWidget(sound.QWidget)
 	}
 	layout.AddLayout(top.QLayout)
 
@@ -390,7 +395,7 @@ func (p *popup) details(r Receiver, paired bool) *qt.QWidget {
 	layout := qt.NewQVBoxLayout(box)
 	layout.SetContentsMargins(42, 4, 0, 0)
 
-	if r.CanMirror() || r.CanPlay() {
+	if r.Usable() {
 		actions := qt.NewQHBoxLayout2()
 		mirror := qt.NewQPushButton4(qt.QIcon_FromTheme(iconMirror), "Mirror Screen")
 		mirror.SetEnabled(r.CanMirror())
@@ -404,9 +409,14 @@ func (p *popup) details(r Receiver, paired bool) *qt.QWidget {
 		url.SetEnabled(r.CanPlay())
 		url.OnClicked(func() { a.playURL(r) })
 		actions.AddWidget(url.QWidget)
+		sound := qt.NewQPushButton4(qt.QIcon_FromTheme(iconSpeaker), "Play Sound")
+		sound.SetToolTip("Play this computer's sound, without video, on " + r.Name)
+		sound.SetEnabled(r.CanStreamAudio())
+		sound.OnClicked(func() { a.streamAudio(r) })
+		actions.AddWidget(sound.QWidget)
 		layout.AddLayout(actions.QLayout)
 	} else {
-		note := qt.NewQLabel3("Audio-only receivers are not supported yet.")
+		note := qt.NewQLabel3("This receiver does not accept anything foxCast can send.")
 		note.SetWordWrap(true)
 		note.SetEnabled(false)
 		layout.AddWidget(note.QWidget)
@@ -438,8 +448,12 @@ func rowState(r *Receiver, s *session, paired bool) string {
 	switch {
 	case s != nil:
 		return s.describe()
+	case !r.Usable():
+		return "Not supported"
+	case !r.CanMirror() && !r.CanPlay() && paired:
+		return "Paired · Speaker"
 	case !r.CanMirror() && !r.CanPlay():
-		return "Audio only · not supported"
+		return "Speaker"
 	case paired && r.Model != "":
 		return "Paired · " + r.Model
 	case paired:

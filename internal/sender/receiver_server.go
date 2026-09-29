@@ -75,8 +75,11 @@ type ReceiverConfig struct {
 	// advertised pixel size. They must be supplied together.
 	DisplayWidth  int
 	DisplayHeight int
-	Logger        *log.Logger
-	Debug         bool
+	// AudioOnly makes the receiver a speaker: /info advertises no video or
+	// screen features and no displays, and video streams are rejected.
+	AudioOnly bool
+	Logger    *log.Logger
+	Debug     bool
 }
 
 // ReceiverStats is a race-free snapshot of protocol and media activity.
@@ -241,6 +244,10 @@ func NewReceiverServer(cfg ReceiverConfig) (*ReceiverServer, error) {
 	if cfg.DisplayWidth > 0 {
 		profile.displayWidth = cfg.DisplayWidth
 		profile.displayHeight = cfg.DisplayHeight
+	}
+	if cfg.AudioOnly {
+		profile.features &^= FeatureVideo | FeatureScreen | FeatureScreenRotate
+		profile.displayWidth, profile.displayHeight = 0, 0
 	}
 	switch cfg.Auth {
 	case ReceiverAuthNone:
@@ -547,6 +554,9 @@ type receiverConnection struct {
 	// playback is set when the control SETUP describes a URL playback
 	// session rather than screen mirroring.
 	playback bool
+	// audioOnly is set once a non-mirroring session carries an audio
+	// stream: a sender using the receiver as a speaker.
+	audioOnly bool
 }
 
 type receiverSessionState uint8
@@ -930,6 +940,7 @@ func (s *ReceiverServer) info(sessionPrepared bool) map[string]any {
 		"features":        s.profile.features,
 		"supportedFormats": map[string]any{
 			"screenStream": s.profile.supportedScreenFormats,
+			"audioStream":  s.profile.supportedScreenFormats,
 		},
 		"statusFlags":              statusFlags,
 		"pk":                       []byte(s.publicKey),
@@ -975,11 +986,18 @@ func (c *receiverConnection) handleSetup(request receiverRequest) receiverRespon
 	if err != nil {
 		return receiverError(400, err)
 	}
-	nextState, err := c.nextSetupState(kind)
+	if kind == receiverSetupVideo && c.server.cfg.AudioOnly {
+		return receiverError(400, fmt.Errorf("audio-only receiver does not accept a video stream"))
+	}
+	// A speaker session describes itself as non-mirroring, either in its
+	// control SETUP (session-first) or alongside the audio stream.
+	mirroring, hasMirroringKey := setup["isScreenMirroringSession"].(bool)
+	audioOnly := kind == receiverSetupAudio && (c.playback || hasMirroringKey && !mirroring)
+	nextState, err := c.nextSetupState(kind, audioOnly)
 	if err != nil {
 		return receiverError(455, err)
 	}
-	if err := c.validateSetup(setup, streams, kind); err != nil {
+	if err := c.validateSetup(setup, streams, kind, audioOnly); err != nil {
 		return receiverError(400, err)
 	}
 	if err := c.ensureMedia(); err != nil {
@@ -1054,6 +1072,9 @@ func (c *receiverConnection) handleSetup(request receiverRequest) receiverRespon
 	result := c.setupPlistResponse(response)
 	if result.status == 200 {
 		c.sessionState = nextState
+		if audioOnly {
+			c.audioOnly, c.playback = true, false
+		}
 	}
 	return result
 }
@@ -1066,7 +1087,7 @@ func receiverSetupResponse(profile receiverProfileSpec, endpoints receiverMediaE
 	return response
 }
 
-func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[string]any, kind receiverSetupKind) error {
+func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[string]any, kind receiverSetupKind, audioOnly bool) error {
 	profile := c.server.profile
 	synthetic := len(setup) == 0
 	if len(streams) == 1 && len(streams[0]) == 1 {
@@ -1093,10 +1114,10 @@ func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[s
 	if hasSession {
 		protocol, _ := setup["timingProtocol"].(string)
 		mirroring, _ := setup["isScreenMirroringSession"].(bool)
-		// URL playback senders (pyatv, iOS video) use NTP even on receivers
-		// whose mirroring sessions use PTP.
+		// URL playback and audio senders (pyatv, iOS video) use NTP even on
+		// receivers whose mirroring sessions use PTP.
 		expected := profile.timingProtocol
-		if !mirroring && kind == receiverSetupControl && protocol == timingProtocolNTP {
+		if !mirroring && protocol == timingProtocolNTP {
 			expected = timingProtocolNTP
 		}
 		if protocol != expected {
@@ -1141,6 +1162,9 @@ func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[s
 		return fmt.Errorf("audio descriptor is ct=%d spf=%d format=0x%x, want ct=%d spf=%d format=0x%x",
 			plistInt(stream["ct"]), plistInt(stream["spf"]), plistInt(stream["audioFormat"]), ct, spf, format)
 	}
+	if err := validateReceiverAudioRouting(stream, audioOnly); err != nil {
+		return err
+	}
 	_, hasConnections := stream["streamConnections"].(map[string]any)
 	hasControlPort := plistInt(stream["controlPort"]) > 0
 	// Count both accepted and rejected descriptor shapes. This lets the fixture
@@ -1167,6 +1191,28 @@ func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[s
 		if _, ok := stream["redundantAudio"]; ok {
 			return fmt.Errorf("AAC-ELD descriptor must not enable redundantAudio")
 		}
+	}
+	return nil
+}
+
+// validateReceiverAudioRouting checks that a speaker stream asks for the
+// receiver's media path and stays within the realtime latency window, and
+// that screen audio is not routed there.
+func validateReceiverAudioRouting(stream map[string]any, audioOnly bool) error {
+	isMedia, _ := stream["isMedia"].(bool)
+	usingScreen, _ := stream["usingScreen"].(bool)
+	if !audioOnly {
+		if isMedia {
+			return fmt.Errorf("screen audio descriptor must not set isMedia")
+		}
+		return nil
+	}
+	if !isMedia || usingScreen {
+		return fmt.Errorf("speaker audio descriptor must set isMedia without usingScreen")
+	}
+	latencyMin, latencyMax := plistInt(stream["latencyMin"]), plistInt(stream["latencyMax"])
+	if latencyMin <= 0 || latencyMax < latencyMin {
+		return fmt.Errorf("speaker audio descriptor has latency window %d-%d", latencyMin, latencyMax)
 	}
 	return nil
 }
@@ -1199,11 +1245,15 @@ func receiverSetupKindForStreams(streams []map[string]any) (receiverSetupKind, e
 	}
 }
 
-func (c *receiverConnection) nextSetupState(kind receiverSetupKind) (receiverSessionState, error) {
+// nextSetupState advances the session. A speaker session is complete with
+// its audio stream; there is no video SETUP to wait for.
+func (c *receiverConnection) nextSetupState(kind receiverSetupKind, audioOnly bool) (receiverSessionState, error) {
 	if c.server.profile.setupOrder == receiverSetupSessionFirst {
 		switch {
 		case c.sessionState == receiverSessionInitial && kind == receiverSetupControl:
 			return receiverSessionControlPrepared, nil
+		case c.sessionState == receiverSessionRecorded && kind == receiverSetupAudio && audioOnly:
+			return receiverSessionReady, nil
 		case c.sessionState == receiverSessionRecorded && kind == receiverSetupAudio:
 			return receiverSessionAudioPrepared, nil
 		case c.sessionState == receiverSessionAudioPrepared && kind == receiverSetupVideo:
@@ -1227,7 +1277,9 @@ func (c *receiverConnection) handleRecord() receiverResponse {
 		}
 		c.sessionState = receiverSessionRecorded
 	} else {
-		if c.sessionState != receiverSessionVideoPrepared {
+		ready := c.sessionState == receiverSessionVideoPrepared ||
+			c.audioOnly && c.sessionState == receiverSessionAudioPrepared
+		if !ready {
 			return c.invalidSessionState("RECORD")
 		}
 		c.sessionState = receiverSessionReady

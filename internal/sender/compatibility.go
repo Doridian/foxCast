@@ -106,6 +106,25 @@ func screenAudioCodec(info *ReceiverInfo) (AudioCodec, error) {
 	)
 }
 
+// speakerAudioCodec picks the codec of an audio-only realtime stream from
+// supportedFormats.audioStream, which uses the same format bits as
+// screenStream. Receivers that omit the mask get ALAC, as pyatv sends.
+func speakerAudioCodec(info *ReceiverInfo) (AudioCodec, error) {
+	if info == nil || info.SupportedFormats.AudioStream == 0 {
+		return AudioCodecALAC, nil
+	}
+	if info.SupportsAudioFormat("audioStream", screenAudioFormatALAC) {
+		return AudioCodecALAC, nil
+	}
+	if info.SupportsAudioFormat("audioStream", screenAudioFormatAACELD44100Stereo) {
+		return AudioCodecAACELD, nil
+	}
+	return 0, fmt.Errorf(
+		"receiver advertises unsupported supportedFormats.audioStream mask 0x%x (need ALAC 0x%x or AAC-ELD 0x%x)",
+		uint64(info.SupportedFormats.AudioStream), screenAudioFormatALAC, screenAudioFormatAACELD44100Stereo,
+	)
+}
+
 func supportsPTPSourceVersion(sourceVersion string) bool {
 	major, minor, patch, ok := parseSourceVersion(sourceVersion)
 	if !ok || major == 377 && minor == 40 {

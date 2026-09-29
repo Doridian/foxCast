@@ -78,6 +78,17 @@ func (r *Receiver) CanPlay() bool {
 	return r.Manual || r.SupportsVideo()
 }
 
+// CanStreamAudio reports whether the receiver can be used as a speaker for
+// the computer's sound.
+func (r *Receiver) CanStreamAudio() bool {
+	return r.Manual || r.SupportsAudio()
+}
+
+// Usable reports whether foxCast can send anything to the receiver.
+func (r *Receiver) Usable() bool {
+	return r.CanMirror() || r.CanPlay() || r.CanStreamAudio()
+}
+
 // Callbacks runs a session's progress notifications.
 type Callbacks struct {
 	// Status reports progress ("Connecting", "Pairing", ...).
@@ -98,6 +109,8 @@ type Backend interface {
 	// Forget deletes everything saved for a device.
 	Forget(deviceID string) error
 	Mirror(ctx context.Context, r *Receiver, prompt Prompter, cb Callbacks) error
+	// StreamAudio sends the computer's sound, and no video, to r.
+	StreamAudio(ctx context.Context, r *Receiver, prompt Prompter, cb Callbacks) error
 	Play(ctx context.Context, r *Receiver, location string, prompt Prompter, cb Callbacks) error
 }
 
@@ -141,7 +154,7 @@ func (l *receiverList) update(devices []sender.AirPlayDevice, now time.Time) boo
 // sameListing reports whether a and b would be shown identically.
 func sameListing(a, b *Receiver) bool {
 	return a.Name == b.Name && a.Model == b.Model && a.IP == b.IP && a.Port == b.Port &&
-		a.CanMirror() == b.CanMirror() && a.CanPlay() == b.CanPlay()
+		a.CanMirror() == b.CanMirror() && a.CanPlay() == b.CanPlay() && a.CanStreamAudio() == b.CanStreamAudio()
 }
 
 // addManual adds a receiver by address and returns it.
@@ -181,7 +194,7 @@ func (l *receiverList) deviceIDs() []string {
 
 // groupReceivers splits rs (already sorted) for display, like known and
 // available networks: receivers that are paired or in use first, then the
-// rest, with ones foxCast cannot use (audio only) last. Only receivers
+// rest, with ones foxCast cannot use last. Only receivers
 // matching query are kept.
 func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query string) (known, other []Receiver) {
 	var unusable []Receiver
@@ -191,7 +204,7 @@ func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query str
 		case !matchesQuery(r, query):
 		case paired(r) || inUse(r):
 			known = append(known, *r)
-		case r.CanMirror() || r.CanPlay():
+		case r.Usable():
 			other = append(other, *r)
 		default:
 			unusable = append(unusable, *r)

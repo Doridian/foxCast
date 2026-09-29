@@ -15,7 +15,8 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 | Screen mirroring (`mirror`, H.264/HEVC + audio, Wayland/X11) | ✅ against the test receiver; hardware-tested upstream in doubletake (AppleTV11,1/14,1, tvOS 27) |
 | System tray app (`gui`, Qt 6; Plasma-style popup, native pairing dialogs) | ✅ against the test receiver |
 | Playback controls in the CLI (pause/seek) | API exists (`PlaybackSession.Rate/Scrub`), not yet exposed |
-| Audio-only streaming (RAOP) to speakers | ⏳ |
+| Audio-only streaming to AirPlay 2 speakers (`mirror -audio-only`, automatic for speakers) | ✅ against the test receiver; not yet hardware-tested |
+| Audio streaming to AirPlay 1-only (RAOP ANNOUNCE) speakers | ⏳ |
 
 ## Usage
 
@@ -31,7 +32,14 @@ foxCast mirror -target 10.0.0.5                   # screen sharing (needs GStrea
                                                   # audio: adds a "<receiver> (foxCast)" output device
                                                   # and makes it the default while mirroring
 foxCast mirror -target 10.0.0.5 -test -no-audio   # synthetic source
+foxCast mirror -target 10.0.0.7                   # a speaker (e.g. HomePod): sound only
+foxCast mirror -target 10.0.0.5 -audio-only       # use a TV as a speaker
 ```
+
+Receivers without screen mirroring are used as speakers: `mirror` streams the computer's sound
+to them the same way it does alongside the screen (the `-audio-source` flags apply), with no
+video. The receiver's volume is left as it is. The playout lead is 500 ms by default;
+`-target-latency-ms` changes it within 250–2000 ms.
 
 Matroska files are rewrapped as HLS with fMP4 segments while playing; video and audio are
 copied, not re-encoded. H.264/HEVC video (incl. HDR10, HLG, Dolby Vision 5/8; profile 7 plays
@@ -55,8 +63,8 @@ session; `-remember-source` reuses the last choice for that receiver instead. Th
 
 `foxCast gui` puts an icon in the system tray. Clicking it opens a popup against the panel,
 like Plasma's Networks applet: paired receivers are listed first, the others below. Click a
-receiver to mirror the screen, play a file (native file picker) or paste a URL, or to forget its
-pairing. PIN and password prompts appear as dialogs. The `mirror`, `play` and credential flags
+receiver to mirror the screen, play a file (native file picker) or paste a URL, play the
+computer's sound on it (Play Sound — the only action for speakers), or to forget its pairing. PIN and password prompts appear as dialogs. The `mirror`, `play` and credential flags
 work here too and apply to every session.
 
 The GUI uses Qt 6 through [miqt](https://github.com/mappu/miqt), so it needs CGo and the Qt 6

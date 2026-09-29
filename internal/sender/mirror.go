@@ -251,6 +251,8 @@ type mirrorSetupRequest struct {
 	timingPeerID      string
 	timingPeerAddress string
 	name              string
+	// audioOnly describes a speaker session: no screen stream follows.
+	audioOnly bool
 }
 
 func (r mirrorSetupRequest) sessionPlist() map[string]interface{} {
@@ -259,11 +261,15 @@ func (r mirrorSetupRequest) sessionPlist() map[string]interface{} {
 		"macAddress":               r.deviceID,
 		"sessionUUID":              r.sessionUUID,
 		"sourceVersion":            r.sourceVersion,
-		"isScreenMirroringSession": true,
+		"isScreenMirroringSession": !r.audioOnly,
 		"timingProtocol":           r.timingProtocol,
 		"osBuildVersion":           "13F69",
 		"model":                    "Linux",
 		"name":                     r.name,
+	}
+	if r.audioOnly {
+		request["isMultiSelectAirPlay"] = false
+		request["senderSupportsRelay"] = false
 	}
 	switch r.timingProtocol {
 	case timingProtocolNTP:

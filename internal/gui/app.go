@@ -43,6 +43,7 @@ type sessionKind int
 const (
 	sessionMirror sessionKind = iota
 	sessionPlay
+	sessionAudio
 )
 
 // session is a running (or starting) mirror or playback. Fields other than
@@ -67,6 +68,8 @@ func (s *session) describe() string {
 		return s.status
 	case s.kind == sessionMirror:
 		return "Mirroring screen"
+	case s.kind == sessionAudio:
+		return "Playing this computer's sound"
 	default:
 		return "Playing " + s.title
 	}
@@ -264,6 +267,10 @@ func (a *app) mirror(r Receiver) {
 	a.start(r, sessionMirror, "")
 }
 
+func (a *app) streamAudio(r Receiver) {
+	a.start(r, sessionAudio, "")
+}
+
 func (a *app) playFile(r Receiver) {
 	file := qt.QFileDialog_GetOpenFileName4(a.dialogParent(), "Play Video on "+r.Name, a.lastDir, videoFileFilter)
 	if file == "" {
@@ -348,9 +355,12 @@ func (a *app) start(r Receiver, kind sessionKind, location string) {
 				a.update()
 				// Pairing may just have completed.
 				a.refreshPaired()
-				if kind == sessionMirror {
+				switch kind {
+				case sessionMirror:
 					a.notify(iconMirror, "Mirroring to "+s.receiver.Name, "Your screen is being shown on "+s.receiver.Name+".")
-				} else {
+				case sessionAudio:
+					a.notify(iconSpeaker, "Playing on "+s.receiver.Name, "Your computer's sound is playing on "+s.receiver.Name+".")
+				default:
 					a.notify(iconActive, "Playing on "+s.receiver.Name, s.title)
 				}
 			})
@@ -373,9 +383,12 @@ func (a *app) start(r Receiver, kind sessionKind, location string) {
 		}
 		var err error
 		if ctx.Err() == nil {
-			if kind == sessionMirror {
+			switch kind {
+			case sessionMirror:
 				err = a.backend.Mirror(ctx, &s.receiver, prompt, cb)
-			} else {
+			case sessionAudio:
+				err = a.backend.StreamAudio(ctx, &s.receiver, prompt, cb)
+			default:
 				err = a.backend.Play(ctx, &s.receiver, location, prompt, cb)
 			}
 		}
@@ -397,12 +410,14 @@ func (a *app) finished(s *session, err error, stopped bool) {
 	case err != nil && !stopped && !errors.Is(err, ErrCancelled):
 		log.Printf("%s: %v", name, err)
 		what := "Mirroring to " + name + " failed"
-		if s.kind == sessionPlay {
+		if s.kind != sessionMirror {
 			what = "Playing on " + name + " failed"
 		}
 		a.notify(iconError, what, errorText(err))
 	case err == nil && !stopped && s.started && s.kind == sessionPlay:
 		a.notify(iconApp, "Playback finished", s.title+" finished playing on "+name+".")
+	case err == nil && !stopped && s.started && s.kind == sessionAudio:
+		a.notify(iconSpeaker, "Sound stopped", name+" stopped playing this computer's sound.")
 	case err == nil && !stopped && s.started:
 		a.notify(iconApp, "Mirroring stopped", name+" ended the mirroring session.")
 	}
@@ -497,12 +512,14 @@ func (a *app) updateTray() {
 		switch {
 		case s != nil && !s.stopping:
 			text := "Stop Mirroring to " + r.Name
-			if s.kind == sessionPlay {
+			if s.kind != sessionMirror {
 				text = "Stop Playing on " + r.Name
 			}
 			items = append(items, trayMenuItem{label: text, icon: iconStop, action: onMain(func() { a.stop(r) })})
 		case s == nil && a.isPaired(&r) && r.CanMirror():
 			items = append(items, trayMenuItem{label: "Mirror to " + r.Name, icon: iconMirror, action: onMain(func() { a.mirror(r) })})
+		case s == nil && a.isPaired(&r) && r.CanStreamAudio() && !r.CanPlay():
+			items = append(items, trayMenuItem{label: "Play Sound on " + r.Name, icon: iconSpeaker, action: onMain(func() { a.streamAudio(r) })})
 		}
 	}
 	if len(items) > 0 {

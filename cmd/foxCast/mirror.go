@@ -31,6 +31,7 @@ type mirrorOptions struct {
 	noEncrypt       bool
 	directKey       bool
 	noAudio         bool
+	audioOnly       bool
 	audioSource     string
 	keepDefaultSink bool
 	x11WindowID     string
@@ -51,6 +52,7 @@ func (m *mirrorOptions) register(flags *flag.FlagSet) {
 	flags.BoolVar(&m.noEncrypt, "no-encrypt", false, "disable RTSP header encryption (debugging only)")
 	flags.BoolVar(&m.directKey, "direct-key", false, "use shk/shiv directly without SHA-512 derivation")
 	flags.BoolVar(&m.noAudio, "no-audio", false, "disable audio streaming")
+	flags.BoolVar(&m.audioOnly, "audio-only", false, "stream only audio, using the receiver as a speaker (automatic for receivers without screen mirroring)")
 	flags.StringVar(&m.audioSource, "audio-source", audioSourceSink, "audio to forward: \"sink\" (a virtual output device for this receiver), \"monitor\" (whatever the default output plays), or a PulseAudio source name")
 	flags.BoolVar(&m.keepDefaultSink, "keep-default-sink", false, "with -audio-source sink, do not make the virtual output device the default")
 	flags.StringVar(&m.x11WindowID, "x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
@@ -61,6 +63,9 @@ func (m *mirrorOptions) register(flags *flag.FlagSet) {
 
 // finish validates the parsed flags and applies process-wide settings.
 func (m *mirrorOptions) finish() error {
+	if m.audioOnly && m.noAudio {
+		return errors.New("-audio-only and -no-audio exclude each other")
+	}
 	if err := sender.ValidateHWAccel(m.hwaccel); err != nil {
 		return fmt.Errorf("invalid -hwaccel: %w", err)
 	}
@@ -101,6 +106,18 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 		return err
 	}
 	defer conn.Close()
+
+	audioOnly := mo.audioOnly
+	if !audioOnly && !conn.info.SupportsScreen() {
+		if mo.noAudio {
+			return fmt.Errorf("%s does not support screen mirroring, and -no-audio leaves nothing to stream", conn.info.Name)
+		}
+		log.Printf("%s does not support screen mirroring; streaming audio only", conn.info.Name)
+		audioOnly = true
+	}
+	if audioOnly {
+		return runSpeaker(ctx, conn, opts, mo, onStarted)
+	}
 
 	streamCfg := sender.StreamConfig{
 		FPS:        mo.fps,
@@ -255,6 +272,48 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 	}
 	if err := session.StreamFrames(ctx, videoSink.AsCapture(), 0); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("streaming: %w", err)
+	}
+	log.Println("stream ended")
+	return nil
+}
+
+// runSpeaker streams local audio to a connected receiver without video, as
+// if it were a speaker, until ctx is cancelled or the stream ends.
+func runSpeaker(ctx context.Context, conn *connection, opts *connectOptions, mo *mirrorOptions, onStarted func()) error {
+	streamCfg := sender.StreamConfig{PortMin: opts.portMin, PortMax: opts.portMax}
+	session, err := conn.client.SetupAudioOnly(ctx, streamCfg)
+	if errors.Is(err, sender.ErrCredentialsRequired) {
+		credential, askErr := opts.askCredential(ctx, conn.info.Name, credentialPINOrPassword, "receiver code/password")
+		if askErr != nil {
+			return askErr
+		}
+		conn.client.SetPassword(credential)
+		session, err = conn.client.SetupAudioOnly(ctx, streamCfg)
+		if err == nil {
+			conn.savePassword(credential)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("audio setup: %w", err)
+	}
+	defer session.Close()
+
+	source, closeSource, err := openAudioSource(mo.audioSource, mo.testMode, !mo.keepDefaultSink, conn.info)
+	if err != nil {
+		return err
+	}
+	defer closeSource()
+	capture, err := sender.StartAudioCapture(ctx, source, session.AudioCodec())
+	if err != nil {
+		return fmt.Errorf("audio capture: %w", err)
+	}
+	defer capture.Stop()
+	log.Println("audio streaming started")
+	if onStarted != nil {
+		onStarted()
+	}
+	if err := session.StreamAudio(ctx, capture, session.AudioStream()); err != nil && ctx.Err() == nil {
+		return fmt.Errorf("audio streaming: %w", err)
 	}
 	log.Println("stream ended")
 	return nil

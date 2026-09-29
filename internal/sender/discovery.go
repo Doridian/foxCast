@@ -344,7 +344,7 @@ const (
 	FeatureVideo          uint64 = 1 << 0
 	FeatureScreen         uint64 = 1 << 7
 	FeatureScreenRotate   uint64 = 1 << 8
-	FeatureAudio          uint64 = 1 << 10
+	FeatureAudio          uint64 = 1 << 9
 	FeatureFPSAP25        uint64 = 1 << 14
 	FeatureHomeKitPairing uint64 = 1 << 17
 	FeatureLegacyPairing  uint64 = 1 << 27
@@ -359,6 +359,17 @@ const (
 
 func (d *AirPlayDevice) SupportsScreen() bool {
 	return d.HasFeature(7)
+}
+
+// SupportsScreen reports screen mirroring support (bit 7) in /info.
+func (i *ReceiverInfo) SupportsScreen() bool {
+	return i.HasFeature(7)
+}
+
+// SupportsAudio reports AirPlay audio support (bit 9), which speakers and
+// video receivers alike advertise.
+func (d *AirPlayDevice) SupportsAudio() bool {
+	return d.HasFeature(9)
 }
 
 // SupportsVideo reports AirPlay video (URL playback) support (bit 0), which

@@ -56,7 +56,7 @@ Usage:
   foxCast discover                     Scan for AirPlay receivers
   foxCast pair   [flags]               Pair with a receiver (saves credentials)
   foxCast play   [flags] <url|file>    Play a URL or local file on a receiver
-  foxCast mirror [flags]               Mirror the screen to a receiver
+  foxCast mirror [flags]               Mirror the screen to a receiver, or audio to a speaker
   foxCast probe  [flags] <url|file>    Show how a file would be played (tracks, transmuxing)
   foxCast serve  [flags] <url|file>    Serve a file (as HLS if it is Matroska) without a receiver
   foxCast gui    [flags]               System tray app (build with -tags gui)
