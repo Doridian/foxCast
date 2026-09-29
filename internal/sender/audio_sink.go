@@ -59,11 +59,21 @@ func CreateVirtualSink(name, description string, makeDefault bool) (*VirtualSink
 	return createVirtualSink(runPactl, name, description, makeDefault)
 }
 
+// CreateVirtualSinkLayout is CreateVirtualSink with a multichannel layout,
+// for a group of receivers that each play some of its channels.
+func CreateVirtualSinkLayout(name, description string, layout ChannelLayout, makeDefault bool) (*VirtualSink, error) {
+	return createVirtualSinkLayout(runPactl, name, description, layout, makeDefault)
+}
+
 func createVirtualSink(pactl pactlRunner, name, description string, makeDefault bool) (*VirtualSink, error) {
+	return createVirtualSinkLayout(pactl, name, description, StereoLayout, makeDefault)
+}
+
+func createVirtualSinkLayout(pactl pactlRunner, name, description string, layout ChannelLayout, makeDefault bool) (*VirtualSink, error) {
 	if err := unloadStaleVirtualSinks(pactl, name); err != nil {
 		return nil, err
 	}
-	out, err := pactl(virtualSinkLoadArgs(name, description)...)
+	out, err := pactl(virtualSinkLoadArgsLayout(name, description, layout)...)
 	if err != nil {
 		return nil, fmt.Errorf("create virtual sink: %w", err)
 	}
@@ -92,6 +102,10 @@ func createVirtualSink(pactl pactlRunner, name, description string, makeDefault 
 }
 
 func virtualSinkLoadArgs(name, description string) []string {
+	return virtualSinkLoadArgsLayout(name, description, StereoLayout)
+}
+
+func virtualSinkLoadArgsLayout(name, description string, layout ChannelLayout) []string {
 	// Module arguments are parsed by the sound server. PulseAudio only keeps
 	// spaces in a value quoted as a whole, so the property list is wrapped in
 	// single quotes around the double-quoted description; pipewire-pulse
@@ -102,8 +116,8 @@ func virtualSinkLoadArgs(name, description string) []string {
 		"load-module", virtualSinkModule,
 		"sink_name=" + name,
 		fmt.Sprintf("rate=%d", audioSampleRate),
-		fmt.Sprintf("channels=%d", audioChannels),
-		"channel_map=front-left,front-right",
+		fmt.Sprintf("channels=%d", len(layout)),
+		"channel_map=" + layout.pulseChannelMap(),
 		fmt.Sprintf(`sink_properties='device.description="%s"'`, description),
 	}
 }

@@ -132,6 +132,12 @@ func supportsTimestampedAudioOutput() bool {
 
 func audioCapturePipelineArgs(srcArgs []string, codec AudioCodec, timestamped bool) []string {
 	_, codecSPF, _, _, _, _ := codec.Info()
+	return audioCapturePipelineArgsLayout(srcArgs, codecSPF, StereoLayout, timestamped)
+}
+
+// audioCapturePipelineArgsLayout records layout's channels interleaved in
+// GStreamer order. codecSPF sizes the RTP packets.
+func audioCapturePipelineArgsLayout(srcArgs []string, codecSPF int64, layout ChannelLayout, timestamped bool) []string {
 	format := "S16LE"
 	if timestamped {
 		// RTP L16 is network byte order. The framed reader restores S16LE before
@@ -142,7 +148,7 @@ func audioCapturePipelineArgs(srcArgs []string, codec AudioCodec, timestamped bo
 	args = append(args,
 		"!", "audioconvert",
 		"!", "audioresample",
-		"!", fmt.Sprintf("audio/x-raw,rate=%d,channels=%d,format=%s,layout=interleaved", audioSampleRate, audioChannels, format),
+		"!", audioCaptureCaps(layout, format),
 	)
 	if timestamped {
 		// Preserve complete source samples through short CPU/GPU scheduling stalls.
@@ -174,6 +180,16 @@ func audioCapturePipelineArgs(srcArgs []string, codec AudioCodec, timestamped bo
 	return append(args, "!", "fdsink", "fd=1", "sync=false", "async=false")
 }
 
+func audioCaptureCaps(layout ChannelLayout, format string) string {
+	caps := fmt.Sprintf("audio/x-raw,rate=%d,channels=%d,format=%s,layout=interleaved", audioSampleRate, len(layout), format)
+	if !layout.isStereo() {
+		// Without a mask GStreamer treats more than two channels as unpositioned
+		// and audioconvert would mix rather than reorder them.
+		caps += fmt.Sprintf(",channel-mask=(bitmask)0x%x", layout.gstChannelMask())
+	}
+	return caps
+}
+
 // AudioSource selects what StartAudioCapture records.
 type AudioSource struct {
 	// TestTone replaces capture with a 440 Hz sine wave.
@@ -200,26 +216,12 @@ func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec
 		srcArgs = []string{"audiotestsrc", "wave=sine", "freq=440", "is-live=true",
 			fmt.Sprintf("samplesperbuffer=%d", codecSPF)}
 		dbg("[AUDIO] using test tone (440 Hz sine wave, live, spf=%d)", codecSPF)
-	} else if hasGstElement("pulsesrc") {
-		device := source.Device
-		if device == "" {
-			device = detectPulseMonitor()
-		}
-		if device == "" {
-			cancel()
-			return nil, fmt.Errorf("no PulseAudio monitor source found")
-		}
-		srcArgs = []string{"pulsesrc", fmt.Sprintf("device=%s", device)}
-		dbg("[AUDIO] using pulsesrc device=%s", device)
-	} else if source.Device != "" {
-		cancel()
-		return nil, fmt.Errorf("recording audio source %q requires GStreamer pulsesrc", source.Device)
-	} else if hasGstElement("pipewiresrc") {
-		srcArgs = []string{"pipewiresrc"}
-		dbg("[AUDIO] using pipewiresrc")
 	} else {
-		cancel()
-		return nil, fmt.Errorf("no audio source available (need pulsesrc or pipewiresrc)")
+		var err error
+		if srcArgs, err = recordingSourceArgs(source.Device); err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 
 	ac := &AudioCapture{
@@ -280,6 +282,29 @@ func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec
 	}()
 
 	return ac, nil
+}
+
+// recordingSourceArgs is the GStreamer source recording device, or the
+// default sink's monitor when device is empty.
+func recordingSourceArgs(device string) ([]string, error) {
+	switch {
+	case hasGstElement("pulsesrc"):
+		if device == "" {
+			device = detectPulseMonitor()
+		}
+		if device == "" {
+			return nil, fmt.Errorf("no PulseAudio monitor source found")
+		}
+		dbg("[AUDIO] using pulsesrc device=%s", device)
+		return []string{"pulsesrc", fmt.Sprintf("device=%s", device)}, nil
+	case device != "":
+		return nil, fmt.Errorf("recording audio source %q requires GStreamer pulsesrc", device)
+	case hasGstElement("pipewiresrc"):
+		dbg("[AUDIO] using pipewiresrc")
+		return []string{"pipewiresrc"}, nil
+	default:
+		return nil, fmt.Errorf("no audio source available (need pulsesrc or pipewiresrc)")
+	}
 }
 
 // ReadFrame reads one encoded audio frame. Timestamp-aware callers should use

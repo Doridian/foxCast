@@ -16,6 +16,7 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 | System tray app (`gui`, Qt 6; Plasma-style popup, native pairing dialogs) | ✅ against the test receiver |
 | Playback controls in the CLI (pause/seek) | API exists (`PlaybackSession.Rate/Scrub`), not yet exposed |
 | Audio-only streaming to AirPlay 2 speakers (`mirror -audio-only`, automatic for speakers) | ✅ against the test receiver; not yet hardware-tested |
+| Receiver groups (`group`: several speakers in step, stereo pairs, quad/5.1/7.1 routing) | ✅ against the test receiver; not yet hardware-tested |
 | Audio streaming to AirPlay 1-only (RAOP ANNOUNCE) speakers | ⏳ |
 
 ## Usage
@@ -35,6 +36,11 @@ foxCast mirror -target 10.0.0.5 -test -no-audio   # synthetic source
 foxCast mirror -target 10.0.0.7                   # a speaker (e.g. HomePod): sound only
 foxCast mirror -target 10.0.0.5 -audio-only       # use a TV as a speaker
 ```
+
+`foxCast group` plays one multichannel output device on several receivers in step, each taking
+a channel or a left/right pair: `foxCast group -layout quad A=FL B=FR C=RL D=RR`, or
+`foxCast group Kitchen Den` for the same stereo in two rooms. `-test` walks a beep around the
+layout to check the placement. See [docs/04](docs/04-audio-streaming.md#receiver-groups-in-foxcast-stereo-pairs-surround).
 
 Receivers without screen mirroring are used as speakers: `mirror` streams the computer's sound
 to them the same way it does alongside the screen (the `-audio-source` flags apply), with no

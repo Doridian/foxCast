@@ -42,9 +42,12 @@ type audioPCMFramePositionReader interface {
 // RTP packet boundaries do not need to match AirPlay codec-frame boundaries.
 type rtpL16PCMFrameReader struct {
 	reader io.Reader
-	now    func() time.Time
-	packet []byte
-	pcm    []byte
+	// frameBytes is the size of one sample frame across all channels;
+	// zero means stereo.
+	frameBytes int
+	now        func() time.Time
+	packet     []byte
+	pcm        []byte
 
 	haveTimeline    bool
 	timelinePTS     time.Time
@@ -69,6 +72,13 @@ func newRTPL16PCMFrameReaderWithNow(reader io.Reader, now func() time.Time) *rtp
 	return &rtpL16PCMFrameReader{reader: reader, now: now}
 }
 
+func (r *rtpL16PCMFrameReader) bytesPerFrame() int {
+	if r.frameBytes == 0 {
+		return audioBytesPerSampleFrame
+	}
+	return r.frameBytes
+}
+
 func (r *rtpL16PCMFrameReader) ReadPCMFrame(dst []byte) (time.Time, error) {
 	position, err := r.ReadPCMFramePosition(dst)
 	return position.PTS, err
@@ -78,7 +88,7 @@ func (r *rtpL16PCMFrameReader) ReadPCMFramePosition(dst []byte) (audioPCMFramePo
 	if r.reader == nil {
 		return audioPCMFramePosition{}, fmt.Errorf("RTP audio: nil capture reader")
 	}
-	if len(dst) == 0 || len(dst)%audioBytesPerSampleFrame != 0 {
+	if len(dst) == 0 || len(dst)%r.bytesPerFrame() != 0 {
 		return audioPCMFramePosition{}, fmt.Errorf("RTP audio: PCM frame size %d is not whole stereo S16 samples", len(dst))
 	}
 
@@ -97,7 +107,7 @@ func (r *rtpL16PCMFrameReader) ReadPCMFramePosition(dst []byte) (audioPCMFramePo
 	pts := r.timelinePTS.Add(audioSamplesDuration(uint64(uint32(sourceRTP - r.timelineRTP))))
 	copy(dst, r.pcm[:len(dst)])
 	r.pcm = r.pcm[len(dst):]
-	r.consumedSamples += uint64(len(dst) / audioBytesPerSampleFrame)
+	r.consumedSamples += uint64(len(dst) / r.bytesPerFrame())
 	return audioPCMFramePosition{PTS: pts, SourceRTP: sourceRTP, HasSourceRTP: true}, nil
 }
 
@@ -110,10 +120,10 @@ func (r *rtpL16PCMFrameReader) readPacket() error {
 	if err != nil {
 		return err
 	}
-	if len(payload)%audioBytesPerSampleFrame != 0 {
-		return fmt.Errorf("RTP audio: L16 payload size %d is not whole stereo samples", len(payload))
+	if len(payload)%r.bytesPerFrame() != 0 {
+		return fmt.Errorf("RTP audio: L16 payload size %d is not whole sample frames", len(payload))
 	}
-	packetSamples := uint64(len(payload) / audioBytesPerSampleFrame)
+	packetSamples := uint64(len(payload) / r.bytesPerFrame())
 	if packetSamples == 0 {
 		return fmt.Errorf("RTP audio: empty L16 payload")
 	}

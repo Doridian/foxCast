@@ -326,3 +326,87 @@ Not yet verified on hardware; the flow is tested end to end against the
 in-process receiver (`-audio-only` on `foxCast-test-receiver`) for every
 receiver profile. AirPlay 1-only speakers (RAOP ANNOUNCE/SDP, e.g. older
 AirPort Express firmware) are not supported.
+
+---
+
+## Receiver Groups in foxCast (stereo pairs, surround)
+
+`foxCast group` plays one multichannel output device on several receivers at
+once, each receiver playing one channel (on both of its sides) or a
+left/right pair:
+
+```
+foxCast group -layout quad Kitchen=FL Den=FR Hall=RL Office=RR
+foxCast group -layout quad "Front Pair=FL,FR" "Back Pair=RL,RR"
+```
+
+### Options considered for keeping receivers in step
+
+| Approach | What foxCast would need | Verdict |
+|---|---|---|
+| Apple multi-room: buffered (type 103) streams, PTP timing, `SETRATEANCHORTIME` | Take part in PTP on UDP 319/320 (privileged ports, as nqptp does for shairport-sync) as grandmaster, or keep every receiver's `timingPeerList` pointing at each other and track the elected grandmaster through RTSP clock headers | Tightest sync, but a PTP stack is a project of its own |
+| Group leader relay (`senderSupportsRelay`, `groupContainsGroupLeader`) | Undocumented relay protocol; only Apple devices lead groups | Not viable |
+| Home app stereo pair | Nothing: the pair is one AirPlay receiver that takes a stereo stream | Works as a group member today (`Pair=RL,RR`) |
+| **Independent realtime sessions sharing one clock (chosen)** | One NTP realtime session per receiver (as for a single speaker), all fed from one capture | Uses only what is already implemented and tested |
+
+### How the chosen approach stays in sync
+
+A realtime NTP receiver does not follow the arrival of packets. It syncs its
+clock to the sender's NTP timing port and plays each RTP sample at the network
+time given by the sender's TimeAnnounce packets (control port, payload
+type 0xd4). foxCast derives those times from the capture timestamp (PTS) of
+each audio frame plus the playout lead. So N receivers play in step when:
+
+1. **One clock.** Every session answers NTP from the same host clock (the
+   sender's boot-relative clock with the 1900 epoch; `audioClockAt`).
+2. **One capture timeline.** `StartGroupAudioCapture` records the
+   multichannel source once. A fan-out gives each receiver its own stereo
+   stream, keeping every chunk's PTS and source sample position unchanged.
+   Each receiver's RTP epoch differs, but its RTP-to-time mapping comes from
+   the same PTS, so sample *n* of the source is announced at the same instant
+   everywhere. Setup order and connection time do not matter.
+3. **One playout lead.** Every session uses the same speaker latency
+   (500 ms by default, `-target-latency-ms`).
+
+foxCast therefore stays involved as the timing authority for the whole
+session: it is every receiver's NTP server, and it sends every
+TimeAnnounce. When capture timestamps are unavailable (no GStreamer
+RTP/ONVIF elements), the fan-out gives frames a sample-counted clock
+anchored at the first read, which all outputs share in the same way.
+
+A per-receiver delay (`Name=FL@15ms`) adds to that receiver's PTS, which
+moves its TimeAnnounce later. That trims for distance or for devices with
+more output latency. Negative delays are not accepted: delay the other
+receivers instead.
+
+A receiver that falls behind (full 0.5 s queue) loses chunks rather than
+stalling the others. Its StreamAudio sees the gap as a source discontinuity
+and carries on from the next chunk. A receiver that drops out leaves the
+others playing.
+
+### Channel layout and routing
+
+`-layout` accepts `stereo`, `quad`, `5.1`, `7.1` or a list (`FL,FR,RC`).
+foxCast creates a null sink with that channel map, and GStreamer records it
+with a matching `channel-mask`. Without a mask, more than two channels count
+as unpositioned and `audioconvert` would mix them. Channels are indexed in
+GStreamer's interleaving order (ascending `GstAudioChannelPosition`), and
+the sink's channel map is written in that same order. Getting stereo
+applications into the rear channels is the sound server's job: PipeWire
+only upmixes when `channelmix.upmix` is enabled. Multichannel sources
+(games, video players set to 4.0/5.1 output) fill the channels directly.
+
+`-test` replaces recording with a beep that walks through the channels in
+layout order (600 ms slots), for matching speakers to positions by ear.
+
+### Accuracy and limits
+
+Sync precision is bounded by how well each receiver tracks the sender's NTP
+clock over Wi-Fi: typically a few milliseconds, not the sub-millisecond
+alignment PTP gives Apple's own groups. That is fine for rooms and loose
+surround, and audible as smearing on a tight stereo image; there a Home app
+stereo pair (one receiver) does better. Not verified on hardware yet. The
+tests check the defining property: two outputs of one group capture announce
+the same network time for the same audio, offset only by their delays
+(`TestGroupOutputsAnnounceTheSameClock`). They also stream to four
+in-process receivers at once.

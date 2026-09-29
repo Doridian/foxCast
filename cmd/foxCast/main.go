@@ -29,6 +29,8 @@ func main() {
 		err = cmdPlay(ctx, args)
 	case "mirror":
 		err = cmdMirror(ctx, args)
+	case "group":
+		err = cmdGroup(ctx, args)
 	case "probe":
 		err = cmdProbe(ctx, args)
 	case "serve":
@@ -57,6 +59,7 @@ Usage:
   foxCast pair   [flags]               Pair with a receiver (saves credentials)
   foxCast play   [flags] <url|file>    Play a URL or local file on a receiver
   foxCast mirror [flags]               Mirror the screen to a receiver, or audio to a speaker
+  foxCast group  [flags] <receiver>... Play audio on several receivers in step (stereo pair, surround)
   foxCast probe  [flags] <url|file>    Show how a file would be played (tracks, transmuxing)
   foxCast serve  [flags] <url|file>    Serve a file (as HLS if it is Matroska) without a receiver
   foxCast gui    [flags]               System tray app (build with -tags gui)
