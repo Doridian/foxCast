@@ -851,3 +851,18 @@ func TestWaylandCompositorStagesScaleBeforeCanvas(t *testing.T) {
 		})
 	}
 }
+
+func TestScreenCastSourceTypes(t *testing.T) {
+	for _, tc := range []struct {
+		available, want uint32
+	}{
+		{0, portalSourceMonitor},
+		{portalSourceMonitor, portalSourceMonitor},
+		{portalSourceMonitor | portalSourceWindow, portalSourceMonitor | portalSourceWindow},
+		{portalSourceMonitor | portalSourceWindow | 4, portalSourceMonitor | portalSourceWindow},
+	} {
+		if got := screenCastSourceTypes(tc.available); got != tc.want {
+			t.Errorf("screenCastSourceTypes(%d) = %d, want %d", tc.available, got, tc.want)
+		}
+	}
+}

@@ -122,6 +122,25 @@ AES-128-CTR decryption does not change payload size.
 
 ---
 
+### Sender-side video capture (Wayland)
+
+foxCast asks xdg-desktop-portal's ScreenCast interface for one source.
+`SelectSources` requests `types = MONITOR (1) | WINDOW (2)`, masked by the
+portal's `AvailableSourceTypes`, so the picker offers individual windows as
+well as whole screens. With `types = 1` alone, KDE's portal shows only the
+monitor list.
+
+By default `persist_mode` is `0` (do not persist) and no restore token is
+sent, so the picker appears for every mirror session, as on macOS.
+`-remember-source` restores the old behaviour: `persist_mode = 2`
+(persistent), and the `restore_token` returned by `Start` is saved per
+receiver in the credential store and sent with the next request, which skips
+the picker. Both options need ScreenCast portal version 4 or newer.
+
+A window source changes size when the window is resized. The fixed-size
+`videoscale add-borders=true` stage in front of the encoder letterboxes it
+into the receiver canvas, so the encoded size stays the same.
+
 ## Mirror Audio
 
 - Codec: AAC-ELD, 44100 Hz, 2 channels

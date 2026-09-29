@@ -47,7 +47,8 @@ Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOX
 (preferred over `-code`). `-debug` or `FOXCAST_TRACE=1` enables protocol logging.
 
 Mirroring needs GStreamer (`gst-launch-1.0` with base/good/bad/ugly/libav plugins) and, on
-Wayland, xdg-desktop-portal. The receiver probes a local UDP timing port during SETUP; use
+Wayland, xdg-desktop-portal. On Wayland the portal asks for a screen or window at the start of every
+session; `-remember-source` reuses the last choice for that receiver instead. The receiver probes a local UDP timing port during SETUP; use
 `-port-range MIN-MAX` to pin the ports if a firewall is in the way.
 
 ### Tray app
@@ -119,7 +120,6 @@ Protocol research and implementation notes are in [`docs/`](docs/):
 ## Later goals
 
 - Screen mirroring (H.264/H.265 + AAC-ELD over TCP/UDP; requires real-time encoding)
-- xdg-desktop-portal integration for app and window capture
 - Runs on Windows as well
 - Support for any AirPlay receiver type (not just Apple TV)
 

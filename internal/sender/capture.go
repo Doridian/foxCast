@@ -37,6 +37,9 @@ type CaptureConfig struct {
 
 	ShowCursor bool // show the mouse cursor in the captured video (Wayland and X11)
 
+	// RestoreToken and SaveRestoreToken let the Wayland portal skip its source
+	// picker by reusing an earlier choice. With SaveRestoreToken nil the portal
+	// is asked not to persist the choice, so every capture prompts again.
 	RestoreToken     string
 	SaveRestoreToken func(string) error
 }
@@ -61,6 +64,16 @@ const (
 	// uses a fixed resolution.
 	testCaptureWidth  = 1920
 	testCaptureHeight = 1080
+)
+
+// xdg-desktop-portal ScreenCast source types and persist modes.
+const (
+	portalSourceMonitor uint32 = 1
+	portalSourceWindow  uint32 = 2
+
+	portalPersistNone       uint32 = 0
+	portalPersistPermanent  uint32 = 2
+	portalMinPersistVersion uint32 = 4
 )
 
 // ScreenCapture manages screen capture via GStreamer.
@@ -192,7 +205,7 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 	if err := exec.Command("gst-inspect-1.0", "pipewiresrc").Run(); err != nil {
 		return nil, fmt.Errorf("GStreamer 'pipewiresrc' plugin not found; install gst-pipewire")
 	}
-	nodeID, pwFd, dbusConn, restoreToken, err := requestScreencast(ctx, cfg.RestoreToken, cfg.ShowCursor, &preparation.streamSize)
+	nodeID, pwFd, dbusConn, restoreToken, err := requestScreencast(ctx, cfg.RestoreToken, cfg.SaveRestoreToken != nil, cfg.ShowCursor, &preparation.streamSize)
 	if err != nil {
 		return nil, fmt.Errorf("screencast portal: %w", err)
 	}
@@ -1526,8 +1539,9 @@ func vbvBufferKbit(bitrateKbps, fps int) int {
 // requestScreencast uses the xdg-desktop-portal D-Bus API to request screen capture
 // permission and returns a PipeWire node ID, an fd for the portal's PipeWire remote,
 // the D-Bus connection (which must stay open to keep the screencast session alive),
-// and a fresh restore token when the portal grants persistence.
-func requestScreencast(ctx context.Context, restoreToken string, showCursor bool, dimensions *[2]int) (uint32, *os.File, *dbus.Conn, string, error) {
+// and a fresh restore token when the portal grants persistence. Without persist
+// the portal forgets the choice, so the source picker appears on every call.
+func requestScreencast(ctx context.Context, restoreToken string, persist, showCursor bool, dimensions *[2]int) (uint32, *os.File, *dbus.Conn, string, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return 0, nil, nil, "", fmt.Errorf("connect session bus: %w", err)
@@ -1573,16 +1587,21 @@ func requestScreencast(ctx context.Context, restoreToken string, showCursor bool
 		cursorMode = 2
 	}
 
-	// Select sources (screen)
+	// Offer both whole monitors and individual windows; the portal's picker
+	// shows only the monitor list when asked for monitors alone.
 	selectOpts := map[string]dbus.Variant{
 		"handle_token": dbus.MakeVariant(baseToken + "_select"),
-		"types":        dbus.MakeVariant(uint32(1)), // MONITOR=1, WINDOW=2
+		"types":        dbus.MakeVariant(screenCastSourceTypes(screenCastAvailableSourceTypes(portal))),
 		"multiple":     dbus.MakeVariant(false),
 		"cursor_mode":  dbus.MakeVariant(cursorMode),
 	}
-	if portalVersion >= 4 {
-		selectOpts["persist_mode"] = dbus.MakeVariant(uint32(2))
-		if restoreToken != "" {
+	if portalVersion >= portalMinPersistVersion {
+		persistMode := portalPersistNone
+		if persist {
+			persistMode = portalPersistPermanent
+		}
+		selectOpts["persist_mode"] = dbus.MakeVariant(persistMode)
+		if persist && restoreToken != "" {
 			selectOpts["restore_token"] = dbus.MakeVariant(restoreToken)
 			dbg("[CAPTURE] requesting screencast restore with saved token")
 		}
@@ -1791,6 +1810,29 @@ func waitForResponseWithResult(ctx context.Context, conn *dbus.Conn, requestHand
 
 func newPortalHandleToken() string {
 	return fmt.Sprintf("airplay_cast_%d", time.Now().UnixNano())
+}
+
+// screenCastAvailableSourceTypes reads the portal's AvailableSourceTypes
+// bitmask, or 0 when it cannot be read.
+func screenCastAvailableSourceTypes(portal dbus.BusObject) uint32 {
+	variant, err := portal.GetProperty("org.freedesktop.portal.ScreenCast.AvailableSourceTypes")
+	if err != nil {
+		dbg("[CAPTURE] unable to read ScreenCast source types: %v", err)
+		return 0
+	}
+	types, ok := variant.Value().(uint32)
+	if !ok {
+		dbg("[CAPTURE] unexpected ScreenCast source types type: %T", variant.Value())
+		return 0
+	}
+	return types
+}
+
+// screenCastSourceTypes selects the monitor and window sources the portal
+// supports. Monitor capture is always requested, so an unknown or
+// monitor-less advertisement falls back to the previous monitor-only request.
+func screenCastSourceTypes(available uint32) uint32 {
+	return portalSourceMonitor | available&portalSourceWindow
 }
 
 func screenCastPortalVersion(portal dbus.BusObject) uint32 {

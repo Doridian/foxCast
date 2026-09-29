@@ -36,6 +36,7 @@ type mirrorOptions struct {
 	x11WindowID     string
 	x11WindowName   string
 	noCursor        bool
+	rememberSource  bool
 
 	xid uint64
 }
@@ -55,6 +56,7 @@ func (m *mirrorOptions) register(flags *flag.FlagSet) {
 	flags.StringVar(&m.x11WindowID, "x11-window-id", "", "X11 window id to capture, decimal or 0xhex")
 	flags.StringVar(&m.x11WindowName, "x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
 	flags.BoolVar(&m.noCursor, "no-cursor", false, "hide the mouse cursor in the captured video")
+	flags.BoolVar(&m.rememberSource, "remember-source", false, "on Wayland, reuse this receiver's last screen/window choice instead of asking every time")
 }
 
 // finish validates the parsed flags and applies process-wide settings.
@@ -127,12 +129,14 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, onS
 		log.Println("using synthetic test source")
 		preparation, err = sender.PrepareTestCapture(ctx, captureCfg)
 	} else {
-		deviceID := conn.info.DeviceID
-		if creds := conn.store.Lookup(deviceID); creds != nil {
-			captureCfg.RestoreToken = creds.RestoreToken
-		}
-		captureCfg.SaveRestoreToken = func(token string) error {
-			return conn.store.SaveRestoreToken(deviceID, token)
+		if mo.rememberSource {
+			deviceID := conn.info.DeviceID
+			if creds := conn.store.Lookup(deviceID); creds != nil {
+				captureCfg.RestoreToken = creds.RestoreToken
+			}
+			captureCfg.SaveRestoreToken = func(token string) error {
+				return conn.store.SaveRestoreToken(deviceID, token)
+			}
 		}
 		preparation, err = sender.PrepareCapture(ctx, captureCfg)
 	}
