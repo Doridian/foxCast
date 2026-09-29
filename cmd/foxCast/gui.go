@@ -59,10 +59,12 @@ func (b *guiBackend) Discover(ctx context.Context) ([]sender.AirPlayDevice, erro
 	return discover(ctx)
 }
 
+// Paired counts a saved password as paired too: password receivers such as
+// HomePods pair transiently on every connection, so only the password is kept.
 func (b *guiBackend) Paired(deviceIDs []string) map[string]bool {
 	paired := make(map[string]bool, len(deviceIDs))
 	for _, id := range deviceIDs {
-		if creds := b.opts.store.Lookup(id); creds != nil && creds.HasPairingCredentials() {
+		if creds := b.opts.store.Lookup(id); creds.HasPairingCredentials() || (creds != nil && creds.Password != "") {
 			paired[id] = true
 		}
 	}

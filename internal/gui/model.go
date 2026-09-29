@@ -108,7 +108,7 @@ type Callbacks struct {
 // error.
 type Backend interface {
 	Discover(ctx context.Context) ([]sender.AirPlayDevice, error)
-	// Paired reports which of the device IDs have saved pairings.
+	// Paired reports which of the device IDs have a saved pairing or password.
 	Paired(deviceIDs []string) map[string]bool
 	// Forget deletes everything saved for a device.
 	Forget(deviceID string) error
