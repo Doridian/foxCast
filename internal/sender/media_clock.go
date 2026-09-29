@@ -1,6 +1,7 @@
 package sender
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -42,9 +43,13 @@ type mediaClock struct {
 	slewUntil  time.Time
 	timelineID uint64
 	estimator  clockEstimator
-	// ptpSampledAt is when the last PTP sample arrived. While PTP samples
-	// keep coming, RTSP clock headers only keep their estimator warm.
+	// ptpSampledAt is when the last PTP sample arrived. From the first, RTSP
+	// clock headers no longer steer the mapping: they are on the receiver's
+	// own clock, which is the PTP timeline only when the receiver is its own
+	// grandmaster (a HomePod following a home theater's Apple TV was minutes
+	// off). ptpStarted is closed then.
 	ptpSampledAt time.Time
+	ptpStarted   chan struct{}
 }
 
 // requestTimes are the local times an RTSP request was sent and its response
@@ -134,7 +139,7 @@ func (c *mediaClock) observe(headers map[string]string, times requestTimes) erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	local, remote := c.estimator.add(sample)
-	if !c.ptpSampledAt.IsZero() && local.Sub(c.ptpSampledAt) < ptpFreshness {
+	if !c.ptpSampledAt.IsZero() {
 		dbg("[PTP] clock headers: delay=%v, %v from the PTP estimate", sample.delay(), remote-c.remoteAtLocked(local))
 		return nil
 	}
@@ -149,7 +154,17 @@ func (c *mediaClock) observe(headers map[string]string, times requestTimes) erro
 func (c *mediaClock) observePTP(local time.Time, remote time.Duration, rate float64, rated bool) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	first := c.ptpSampledAt.IsZero()
 	c.ptpSampledAt = local
+	if first {
+		close(c.ptpStartedLocked())
+		if current := c.remoteAtLocked(local); !c.anchorLocal.IsZero() && absDuration(remote-current) > mediaClockStepThreshold {
+			// The clock headers were on another clock: take the PTP
+			// timeline as a new start, even if that is a step back.
+			dbg("[PTP] clock headers were %v off the PTP time; switching to PTP", current-remote)
+			c.anchorLocal, c.anchorRemote = time.Time{}, 0
+		}
+	}
 	correction := c.steerLocked(local, remote)
 	if rated {
 		// steerLocked anchored the mapping at local, so the new rate takes
@@ -165,6 +180,7 @@ func (c *mediaClock) observePTP(local time.Time, remote time.Duration, rate floa
 func (c *mediaClock) steerLocked(local time.Time, remote time.Duration) time.Duration {
 	if c.anchorLocal.IsZero() {
 		c.anchorLocal, c.anchorRemote = local, remote
+		c.slewRate, c.slewUntil = 0, time.Time{}
 		return 0
 	}
 	current := c.remoteAtLocked(local)
@@ -214,6 +230,37 @@ func (c *mediaClock) updateTimingPeerInfo(peer map[string]interface{}) error {
 
 	dbg("[PTP] event timing peer update: timeline=0x%016x (was 0x%016x)", timelineID, previousTimeline)
 	return nil
+}
+
+func (c *mediaClock) ptpStartedLocked() chan struct{} {
+	if c.ptpStarted == nil {
+		c.ptpStarted = make(chan struct{})
+	}
+	return c.ptpStarted
+}
+
+// waitForPTP waits up to timeout for the first PTP sample and says whether
+// it came.
+func (c *mediaClock) waitForPTP(ctx context.Context, timeout time.Duration) bool {
+	c.mu.Lock()
+	started := c.ptpStartedLocked()
+	c.mu.Unlock()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-started:
+		return true
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	return false
+}
+
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 func (c *mediaClock) now(bias time.Duration) (timestamp, timelineID uint64, ok bool) {

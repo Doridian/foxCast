@@ -69,8 +69,8 @@ choice for that receiver instead. The receiver probes a local UDP timing port du
 HomePods and current Apple TVs time sessions with PTP. foxCast follows their clocks on UDP
 ports 319/320, which needs `sudo setcap cap_net_bind_service=+ep` on the binary (or
 `net.ipv4.ip_unprivileged_port_start=319`) and UDP 319-320 open in the firewall. Without them
-those receivers are timed from their RTSP clock headers, a few milliseconds less precisely,
-which matters mostly for `foxCast group`. See [docs/04](docs/04-audio-streaming.md).
+those receivers are timed from their RTSP clock headers: a few milliseconds less precisely, and
+minutes off for a HomePod that follows another device's clock (a home theater's speakers). See [docs/04](docs/04-audio-streaming.md).
 
 ### Tray app
 

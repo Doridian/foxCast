@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log"
 	"net"
 	"time"
 )
@@ -262,6 +263,11 @@ func (c *AirPlayClient) SetupAudioOnly(ctx context.Context, cfg StreamConfig) (*
 		return nil, err
 	}
 	session.startWorker(func() { session.feedbackLoop(sessionCtx) })
+	if clock != nil && cfg.PTP != nil && !clock.waitForPTP(ctx, ptpStartTimeout) {
+		// The clock headers may be on another clock than the PTP timeline
+		// (see mediaClock); the first PTP sample then restarts the timeline.
+		log.Printf("no PTP timing from %s after %v; starting on its clock headers", c.host, ptpStartTimeout)
+	}
 
 	setupSucceeded = true
 	return session, nil

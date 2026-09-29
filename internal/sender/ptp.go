@@ -68,15 +68,22 @@ const (
 	// the path delay estimate draws on. Wi-Fi congestion can hold every
 	// round trip of a few seconds tens of milliseconds above the floor.
 	ptpRoundTripWindow = 64
-	// ptpSettleRoundTrips is how many round trips a peer needs before its
-	// estimate steers the clock, so a congested start does not anchor it.
-	ptpSettleRoundTrips = 8
-	ptpDelayReqInterval = time.Second
+	// ptpSettleSyncs and ptpSettleRoundTrips are what a peer needs before
+	// its estimate steers the clock: one lower-envelope bin and a few round
+	// trips. The rate follows once the bins span ptpMinRateSpan.
+	ptpSettleSyncs      = ptpSyncBin
+	ptpSettleRoundTrips = 3
+	// Delay_Reqs go every ptpDelayReqInterval, and every
+	// ptpStartDelayReqInterval for a peer's first ptpStartDelayReqs, so a
+	// session gets its path delay quickly.
+	ptpDelayReqInterval      = time.Second
+	ptpStartDelayReqInterval = 250 * time.Millisecond
+	ptpStartDelayReqs        = 8
+	// ptpStartTimeout is how long a speaker session waits for the
+	// receiver's PTP clock before it starts on the clock headers.
+	ptpStartTimeout = 3 * time.Second
 	// ptpPendingLimit bounds unanswered Delay_Reqs and unpaired Syncs.
 	ptpPendingLimit = 16
-	// ptpFreshness is how recent a PTP sample must be to take precedence
-	// over the receiver's RTSP clock headers.
-	ptpFreshness = 2 * time.Second
 	// ptpLogEvery thins the per-Sync debug log.
 	ptpLogEvery = 32
 )
@@ -102,12 +109,13 @@ type PTPListener struct {
 // ListenPTP binds the PTP ports and starts following receivers as sessions
 // register them. Close releases the ports.
 func ListenPTP() (*PTPListener, error) {
-	return listenPTP(ptpEventPort, ptpGeneralPort, ptpEventPort, ptpDelayReqInterval)
+	return listenPTP(ptpEventPort, ptpGeneralPort, ptpEventPort, ptpStartDelayReqInterval, ptpDelayReqInterval)
 }
 
 // listenPTP binds eventPort and generalPort (0 picks free ports) and sends
-// Delay_Reqs to receivers' peerEventPort every delayInterval.
-func listenPTP(eventPort, generalPort, peerEventPort int, delayInterval time.Duration) (*PTPListener, error) {
+// Delay_Reqs to receivers' peerEventPort, every startInterval for a peer's
+// first ptpStartDelayReqs and every interval after.
+func listenPTP(eventPort, generalPort, peerEventPort int, startInterval, interval time.Duration) (*PTPListener, error) {
 	var id [8]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return nil, fmt.Errorf("generate PTP clock identity: %w", err)
@@ -138,7 +146,7 @@ func listenPTP(eventPort, generalPort, peerEventPort int, delayInterval time.Dur
 	l.wg.Add(3)
 	go l.readLoop(event)
 	go l.readLoop(general)
-	go l.delayLoop(ctx, delayInterval)
+	go l.delayLoop(ctx, startInterval, interval)
 	return l, nil
 }
 
@@ -155,6 +163,7 @@ func (l *PTPListener) Close() error {
 func (l *PTPListener) follow(ctx context.Context, addr netip.Addr, clock *mediaClock) {
 	addr = addr.Unmap()
 	peer := &ptpPeer{
+		addr:          addr,
 		clock:         clock,
 		syncs:         make(map[uint16]ptpPendingSync),
 		delayRequests: make(map[uint16]time.Time),
@@ -191,9 +200,9 @@ func (l *PTPListener) readLoop(conn *net.UDPConn) {
 	}
 }
 
-func (l *PTPListener) delayLoop(ctx context.Context, interval time.Duration) {
+func (l *PTPListener) delayLoop(ctx context.Context, startInterval, interval time.Duration) {
 	defer l.wg.Done()
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(startInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -203,6 +212,13 @@ func (l *PTPListener) delayLoop(ctx context.Context, interval time.Duration) {
 		}
 		l.mu.Lock()
 		for addr, peer := range l.peers {
+			due := interval
+			if peer.delayRequestsSent < ptpStartDelayReqs {
+				due = startInterval
+			}
+			if time.Since(peer.lastDelayRequest) < due-startInterval/2 {
+				continue
+			}
 			l.delaySeq++
 			seq := l.delaySeq
 			sent := time.Now()
@@ -211,6 +227,8 @@ func (l *PTPListener) delayLoop(ctx context.Context, interval time.Duration) {
 				continue
 			}
 			peer.addDelayRequest(seq, sent)
+			peer.delayRequestsSent++
+			peer.lastDelayRequest = sent
 		}
 		l.mu.Unlock()
 	}
@@ -251,13 +269,17 @@ func (l *PTPListener) handle(from netip.Addr, packet []byte, at time.Time) {
 
 // ptpPeer is the state of one followed receiver. PTPListener.mu guards it.
 type ptpPeer struct {
+	addr          netip.Addr
 	clock         *mediaClock
 	syncs         map[uint16]ptpPendingSync
 	estimator     ptpSyncEstimator
 	delayRequests map[uint16]time.Time
-	roundTrips    []time.Duration
-	grandmaster   uint64
-	samples       int
+	// delayRequestsSent and lastDelayRequest pace the Delay_Reqs.
+	delayRequestsSent int
+	lastDelayRequest  time.Time
+	roundTrips        []time.Duration
+	grandmaster       uint64
+	samples           int
 }
 
 // ptpPendingSync is half of a two-step Sync: the Sync's arrival or its
@@ -284,14 +306,16 @@ func (p *ptpPeer) pairSync(seq uint16, half ptpPendingSync) {
 	}
 	local, remote, rate, rated := p.estimator.add(arrival, origin)
 	p.samples++
-	if !rated || len(p.roundTrips) < ptpSettleRoundTrips {
+	if p.samples < ptpSettleSyncs || len(p.roundTrips) < ptpSettleRoundTrips {
 		// Until then the receiver's clock headers keep timing the session.
 		return
 	}
 	oneWay := p.oneWayDelay()
 	correction := p.clock.observePTP(local, remote+oneWay, rate, rated)
 	if p.samples%ptpLogEvery == 1 {
-		dbg("[PTP] sync sample %d: one-way=%v rate=%+.1fppm correction=%v", p.samples, oneWay, rate*1e6, correction)
+		// The offset from wall time compares receivers of one group.
+		dbg("[PTP] %s sync sample %d: one-way=%v rate=%+.1fppm correction=%v wall-offset=%v",
+			p.addr, p.samples, oneWay, rate*1e6, correction, remote+oneWay-time.Duration(local.UnixNano()))
 	}
 }
 
@@ -335,7 +359,7 @@ func (p *ptpPeer) oneWayDelay() time.Duration {
 func (p *ptpPeer) announce(grandmaster uint64) {
 	if grandmaster != p.grandmaster {
 		p.grandmaster = grandmaster
-		dbg("[PTP] grandmaster 0x%016x", grandmaster)
+		dbg("[PTP] %s grandmaster 0x%016x", p.addr, grandmaster)
 	}
 }
 

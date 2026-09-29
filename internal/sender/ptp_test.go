@@ -215,7 +215,7 @@ func TestPTPListenerTimesDelayRequestRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer master.Close()
-	l, err := listenPTP(0, 0, master.LocalAddr().(*net.UDPAddr).Port, 10*time.Millisecond)
+	l, err := listenPTP(0, 0, master.LocalAddr().(*net.UDPAddr).Port, 10*time.Millisecond, 10*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,4 +257,56 @@ func TestPTPListenerTimesDelayRequestRoundTrips(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("Delay_Resps were not matched to their requests")
+}
+
+func TestMediaClockSwitchesToPTPWhenHeadersAreOnAnotherClock(t *testing.T) {
+	start := time.Unix(1000, 0)
+	clock := &mediaClock{anchorLocal: start, anchorRemote: 5000 * time.Second, timelineID: 1}
+	// The receiver's PTP time is 16 minutes behind its clock headers.
+	ptpTime := 5000*time.Second - 16*time.Minute
+	local := start.Add(time.Second)
+	clock.observePTP(local, ptpTime+time.Second, 0, false)
+	if got := clock.remoteAtLocked(local); got != ptpTime+time.Second {
+		t.Fatalf("clock = %v after the first PTP sample, want %v", got, ptpTime+time.Second)
+	}
+	select {
+	case <-clock.ptpStarted:
+	default:
+		t.Fatal("first PTP sample did not signal waitForPTP")
+	}
+
+	// From then on, clock headers do not steer it back.
+	sent := local.Add(time.Second)
+	if err := clock.observe(map[string]string{
+		"x-apple-requestreceivedtimestamp": "5002000",
+		"x-apple-processingtime":           "0",
+	}, requestTimes{sent: sent, received: sent}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := clock.remoteAtLocked(sent), ptpTime+2*time.Second; got != want {
+		t.Fatalf("clock = %v after a header sample, want %v", got, want)
+	}
+}
+
+func TestMediaClockSlewsSmallPTPTakeover(t *testing.T) {
+	start := time.Unix(1000, 0)
+	clock := &mediaClock{anchorLocal: start, anchorRemote: 5000 * time.Second, timelineID: 1}
+	local := start.Add(time.Second)
+	// 3 ms behind the header estimate: an estimation error, not another
+	// clock, so the timeline must not step back.
+	clock.observePTP(local, 5001*time.Second-3*time.Millisecond, 0, false)
+	if got := clock.remoteAtLocked(local); got != 5001*time.Second {
+		t.Fatalf("clock stepped to %v", got)
+	}
+}
+
+func TestMediaClockWaitForPTPTimesOut(t *testing.T) {
+	clock := &mediaClock{timelineID: 1}
+	if clock.waitForPTP(context.Background(), 10*time.Millisecond) {
+		t.Fatal("waitForPTP reported PTP without a sample")
+	}
+	go clock.observePTP(time.Now(), time.Second, 0, false)
+	if !clock.waitForPTP(context.Background(), 2*time.Second) {
+		t.Fatal("waitForPTP missed the first sample")
+	}
 }

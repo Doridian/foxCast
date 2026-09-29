@@ -466,7 +466,7 @@ address (flags `0x0408`: unicast, PTP timescale):
 |---|---|---|---|
 | Sync (two-step) | 319 | 8/s (log −3) | |
 | Follow_Up | 320 | 8/s | 802.1AS Follow_Up information TLV (OUI `00-80-C2`) and an Apple TLV (OUI `00-0D-93`) carrying the ClockID |
-| Announce | 320 | 4/s (log −2) | grandmaster = the HomePod's own ClockID, priority1 248 |
+| Announce | 320 | 4/s (log −2) | grandmaster: the HomePod's own ClockID (priority1 248), or the home's grandmaster, see below |
 | Signaling | 320 | 4/s | Apple TLVs (OUI `00-0D-93`) |
 
 The first header byte carries transportSpecific 1 (majorSdoId, 802.1AS).
@@ -480,9 +480,18 @@ receiveTimestamp does not: with or without its correction, the path delays
 it implies are negative and vary by milliseconds from run to run. foxCast
 therefore uses only the Delay_Resp's arrival, to time the round trip itself.
 
+A HomePod need not be its own grandmaster. The two HomePods set up as Den
+TV's home theater speakers both announced grandmaster `0x9c3e539f34dc0008`
+(presumably the Apple TV) and sent Syncs on its time, each under its own
+ClockID (the one in its SETUP response, which foxCast uses as the timeline
+ID). foxCast's two estimates of that shared time agreed within about
+0.1-0.4 ms over a minute.
+
 The receiver's `X-Apple-RequestReceivedTimestamp` header (milliseconds) is
-on the same clock, so a session starts on the header estimate and moves to
-PTP without a discontinuity.
+on the receiver's own clock. That is the PTP timeline only when the
+receiver is its own grandmaster: on Dori Office HomePod they agreed to a
+few milliseconds, but the two Den HomePods' headers were 16½ and 4¾
+minutes off the grandmaster time.
 
 ### Following it
 
@@ -499,10 +508,18 @@ timestamps (`SO_TIMESTAMPNS`), and per followed receiver:
 3. estimates the receiver's time as the mean of the latest 8 minima at that
    rate, plus the one-way delay: half the fastest of the last 64
    Delay_Req round trips (one a second), taking the path to be symmetric;
-4. steers the session's `mediaClock` with that time and rate, once the fit
-   spans 4 s and 8 round trips have come back. Until then, and whenever no
-   Sync has arrived for 2 s, the clock headers of `/feedback` (every 2 s)
-   and SETUP responses time the session.
+4. steers the session's `mediaClock` with that time once 8 Syncs (one bin)
+   and 3 round trips are in (Delay_Reqs go 4/s for the first 8), and with
+   the rate once the minima span 4 s.
+
+Until the first PTP sample, the clock headers of SETUP responses and
+`/feedback` time the session; after it, they are ignored, as they may be on
+another clock. If the first PTP estimate is more than 20 ms from the header
+one, the headers were on another clock and the timeline restarts on PTP
+time, stepping back if need be; otherwise the difference is slewed out like
+any correction. A speaker session waits up to 3 s for that first sample
+before it starts streaming (about 1 s on the HomePods above), so audio
+starts on PTP time.
 
 Rate tracking is needed even between two healthy clocks: the local
 monotonic clock is steered by NTP (systemd-timesyncd's kernel PLL was
@@ -521,14 +538,17 @@ while the header estimate wanders by ±8 ms around it.
 
 ### Falling back to the clock headers
 
-Without the PTP ports, a PTP session is timed from the receiver's RTSP
-clock headers alone (`clockEstimator`, `internal/sender/clock_estimator.go`):
+Without the PTP ports, or when a receiver sends no Syncs, a PTP session is
+timed from the receiver's RTSP clock headers alone (`clockEstimator`, `internal/sender/clock_estimator.go`):
 each request/response exchange gives four timestamps; the estimate
 averages the midpoints of the lowest-delay exchanges of the last 8, which
 also averages out the headers' millisecond truncation. Its error is bounded
 by half the fastest round trip, 5 ms on the HomePod above, where RTSP
 round trips never went below 10 ms. The first 5 `/feedback` requests of a
-PTP session go 200 ms apart to fill the estimator.
+PTP session go 200 ms apart to fill the estimator. It is right only for a
+receiver that is its own grandmaster: one following another device's clock
+(the Den HomePods above) is timed minutes off, which such a receiver can
+only drop or hold. foxCast needs the PTP ports for those.
 
 Ports 319 and 320 are privileged: foxCast needs `CAP_NET_BIND_SERVICE`
 (`setcap cap_net_bind_service=+ep`) or `net.ipv4.ip_unprivileged_port_start`
