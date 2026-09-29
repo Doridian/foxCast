@@ -113,11 +113,10 @@ func TestEventChannelUpdatesTimingPeerAndStillAcknowledges(t *testing.T) {
 		t.Fatalf("create plaintext event channel: %v", err)
 	}
 	anchorLocal := time.Now().Add(-time.Second)
-	anchorTimestamp := compactTimestamp(10 * time.Second)
 	clock := &mediaClock{
-		anchorLocal:     anchorLocal,
-		anchorTimestamp: anchorTimestamp,
-		timelineID:      1,
+		anchorLocal:  anchorLocal,
+		anchorRemote: 10 * time.Second,
+		timelineID:   1,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,19 +146,13 @@ func TestEventChannelUpdatesTimingPeerAndStillAcknowledges(t *testing.T) {
 		t.Fatalf("write timing peer update: %v", err)
 	}
 
-	clock.mu.RLock()
-	gotTimeline := clock.timelineID
-	gotAnchorLocal := clock.anchorLocal
-	gotAnchorTimestamp := clock.anchorTimestamp
-	clock.mu.RUnlock()
+	probe := anchorLocal.Add(2 * time.Second)
+	got, gotTimeline, _ := clock.at(probe, 0)
 	if gotTimeline != timeline {
 		t.Fatalf("timeline = 0x%016x, want 0x%016x", gotTimeline, timeline)
 	}
-	if !gotAnchorLocal.After(anchorLocal) {
-		t.Fatalf("anchor local time = %v, want after %v", gotAnchorLocal, anchorLocal)
-	}
-	if gotAnchorTimestamp <= anchorTimestamp {
-		t.Fatalf("anchor timestamp = 0x%016x, want after 0x%016x", gotAnchorTimestamp, anchorTimestamp)
+	if want := compactTimestamp(12 * time.Second); got != want {
+		t.Fatalf("timestamp after timeline switch = 0x%016x, want 0x%016x (continuous)", got, want)
 	}
 
 	cancel()

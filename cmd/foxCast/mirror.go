@@ -95,6 +95,7 @@ func cmdMirror(ctx context.Context, args []string) error {
 	if err := opts.finish(mirrorUDPPorts); err != nil {
 		return err
 	}
+	defer opts.openPTP()()
 	return runMirror(ctx, &opts, &mo, mirrorHooks{})
 }
 
@@ -142,6 +143,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		NoAudio:    mo.noAudio,
 		PortMin:    opts.portMin,
 		PortMax:    opts.portMax,
+		PTP:        opts.ptp,
 	}
 	// The session can end because the user dismissed the source picker.
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -334,7 +336,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 // runSpeaker streams local audio to a connected receiver without video, as
 // if it were a speaker, until ctx is cancelled or the stream ends.
 func runSpeaker(ctx context.Context, conn *connection, opts *connectOptions, mo *mirrorOptions, onStarted func()) error {
-	streamCfg := sender.StreamConfig{PortMin: opts.portMin, PortMax: opts.portMax}
+	streamCfg := sender.StreamConfig{PortMin: opts.portMin, PortMax: opts.portMax, PTP: opts.ptp}
 	session, err := conn.client.SetupAudioOnly(ctx, streamCfg)
 	if errors.Is(err, sender.ErrCredentialsRequired) {
 		credential, askErr := opts.askCredential(ctx, conn.info.Name, credentialPINOrPassword, "receiver code/password")

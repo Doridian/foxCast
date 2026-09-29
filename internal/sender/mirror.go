@@ -14,6 +14,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,172 +34,6 @@ const (
 	legacyAirPlaySourceVersion = "280.33"
 	modernAirPlaySourceVersion = "980.71.1"
 )
-
-// mediaClock maps local monotonic time onto the receiver's PTP timeline. The
-// receiver's X-Apple-RequestReceivedTimestamp is in the same boot-relative
-// domain as its PTP Follow_Up timestamps, so no local PTP stack is required.
-type mediaClock struct {
-	mu              sync.RWMutex
-	anchorLocal     time.Time
-	anchorTimestamp uint64
-	timelineID      uint64
-}
-
-func (c *mediaClock) configureFromSetup(response map[string]interface{}, headers map[string]string, receivedAt time.Time) error {
-	peer, _ := response["timingPeerInfo"].(map[string]interface{})
-	timelineID := plistUint64(peer["ClockID"])
-	if timelineID == 0 {
-		return fmt.Errorf("SETUP response omitted timingPeerInfo.ClockID")
-	}
-
-	anchorTimestamp, receivedMillis, processingMillis, err := receiverClockTimestamp(headers)
-	if err != nil {
-		// Keep the receiver's identity even when the private clock-anchor headers
-		// are absent. The fallback can then anchor local boot time to the actual
-		// advertised PTP timeline.
-		c.mu.Lock()
-		c.timelineID = timelineID
-		c.mu.Unlock()
-		return err
-	}
-
-	c.mu.Lock()
-	c.timelineID = timelineID
-	c.anchorLocal = receivedAt
-	c.anchorTimestamp = anchorTimestamp
-	c.mu.Unlock()
-	dbg("[PTP] receiver clock: timeline=0x%016x anchor=%dms processing=%dms",
-		timelineID, receivedMillis, processingMillis)
-	return nil
-}
-
-// configureFromLocalClock anchors a PTP timeline to the sender's boot clock.
-// Some third-party PTP receivers return ClockID but omit Apple's private clock
-// headers. A ClockID remains mandatory: inventing one would describe a timeline
-// the receiver has never advertised and would make both audio and video invalid.
-func (c *mediaClock) configureFromLocalClock() error {
-	anchorLocal := time.Now()
-	anchorTimestamp := compactTimestamp(bootRelativeNow())
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.timelineID == 0 {
-		return fmt.Errorf("cannot configure local PTP clock without receiver ClockID")
-	}
-	c.anchorLocal = anchorLocal
-	c.anchorTimestamp = anchorTimestamp
-	return nil
-}
-
-func (c *mediaClock) identity() uint64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.timelineID
-}
-
-func receiverClockTimestamp(headers map[string]string) (timestamp, receivedMillis, processingMillis uint64, err error) {
-	receivedMillis, err = strconv.ParseUint(headers["x-apple-requestreceivedtimestamp"], 10, 64)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid X-Apple-RequestReceivedTimestamp %q", headers["x-apple-requestreceivedtimestamp"])
-	}
-	processingMillis, err = strconv.ParseUint(headers["x-apple-processingtime"], 10, 64)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid X-Apple-ProcessingTime %q", headers["x-apple-processingtime"])
-	}
-	maxMillis := uint64(math.MaxInt64 / int64(time.Millisecond))
-	if receivedMillis > maxMillis || processingMillis > maxMillis-receivedMillis {
-		return 0, 0, 0, fmt.Errorf("receiver timestamp is out of range")
-	}
-	return compactTimestamp(time.Duration(receivedMillis+processingMillis) * time.Millisecond), receivedMillis, processingMillis, nil
-}
-
-func (c *mediaClock) reanchor(headers map[string]string, receivedAt time.Time) error {
-	anchorTimestamp, _, _, err := receiverClockTimestamp(headers)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	// A feedback response carries the receiver's earlier request/processing
-	// timestamp but is observed only when the response reaches us. Network delay
-	// can therefore make a fresh sample appear older than the mapping already in
-	// use. Never move the shared clock backwards: audio and video must observe the
-	// same continuous timeline instead of relying on video-only packet clamping.
-	if !c.anchorLocal.IsZero() && !receivedAt.Before(c.anchorLocal) {
-		projected := c.anchorTimestamp + compactTimestamp(receivedAt.Sub(c.anchorLocal))
-		if anchorTimestamp < projected {
-			anchorTimestamp = projected
-		}
-	}
-	c.anchorTimestamp = anchorTimestamp
-	c.anchorLocal = receivedAt
-	c.mu.Unlock()
-	return nil
-}
-
-// updateTimingPeerInfo switches to a newly advertised PTP timeline without
-// introducing a timestamp discontinuity. Event-channel timing updates contain
-// only peer metadata (not a receiver timestamp), so carry the current estimate
-// forward to the instant the command was received and update both atomically.
-func (c *mediaClock) updateTimingPeerInfo(peer map[string]interface{}, receivedAt time.Time) error {
-	timelineID := plistUint64(peer["ClockID"])
-	if timelineID == 0 {
-		return fmt.Errorf("updateTimingPeerInfo omitted ClockID")
-	}
-
-	c.mu.Lock()
-	previousTimeline := c.timelineID
-	if !c.anchorLocal.IsZero() && !receivedAt.Before(c.anchorLocal) {
-		c.anchorTimestamp += compactTimestamp(receivedAt.Sub(c.anchorLocal))
-		c.anchorLocal = receivedAt
-	}
-	c.timelineID = timelineID
-	c.mu.Unlock()
-
-	dbg("[PTP] event timing peer update: timeline=0x%016x (was 0x%016x)", timelineID, previousTimeline)
-	return nil
-}
-
-func (c *mediaClock) now(bias time.Duration) (timestamp, timelineID uint64, ok bool) {
-	c.mu.RLock()
-	anchorLocal := c.anchorLocal
-	anchorTimestamp := c.anchorTimestamp
-	timelineID = c.timelineID
-	c.mu.RUnlock()
-	if anchorLocal.IsZero() || timelineID == 0 {
-		return 0, 0, false
-	}
-	return anchorTimestamp + compactTimestamp(time.Since(anchorLocal)+bias), timelineID, true
-}
-
-// at maps a local monotonic capture time onto the receiver's PTP timeline.
-// Unlike now, it preserves time spent in capture, scaling, and encoding.
-func (c *mediaClock) at(local time.Time, bias time.Duration) (timestamp, timelineID uint64, ok bool) {
-	c.mu.RLock()
-	anchorLocal := c.anchorLocal
-	anchorTimestamp := c.anchorTimestamp
-	timelineID = c.timelineID
-	c.mu.RUnlock()
-	if local.IsZero() || anchorLocal.IsZero() || timelineID == 0 {
-		return 0, 0, false
-	}
-	timestamp, ok = addTimestampDuration(anchorTimestamp, local.Sub(anchorLocal)+bias)
-	return timestamp, timelineID, ok
-}
-
-func addTimestampDuration(timestamp uint64, delta time.Duration) (uint64, bool) {
-	if delta >= 0 {
-		addition := compactTimestamp(delta)
-		if addition > ^uint64(0)-timestamp {
-			return 0, false
-		}
-		return timestamp + addition, true
-	}
-	subtraction := compactTimestamp(-delta)
-	if subtraction > timestamp {
-		return 0, false
-	}
-	return timestamp - subtraction, true
-}
 
 // MirrorSession manages an active screen mirroring session.
 type MirrorSession struct {
@@ -356,22 +191,23 @@ func audioLayoutName(layout audioConnectionLayout) string {
 	return "controlPort"
 }
 
-func (c *AirPlayClient) requestSetup(uri, phase string, request map[string]interface{}) (map[string]interface{}, map[string]string, time.Time, error) {
+func (c *AirPlayClient) requestSetup(uri, phase string, request map[string]interface{}) (map[string]interface{}, map[string]string, requestTimes, error) {
 	body, err := plist.Marshal(request, plist.BinaryFormat)
 	if err != nil {
-		return nil, nil, time.Time{}, fmt.Errorf("marshal %s SETUP: %w", phase, err)
+		return nil, nil, requestTimes{}, fmt.Errorf("marshal %s SETUP: %w", phase, err)
 	}
+	times := requestTimes{sent: time.Now()}
 	responseBody, headers, err := c.rtspRequest("SETUP", uri, "application/x-apple-binary-plist", body, nil)
-	receivedAt := time.Now()
+	times.received = time.Now()
 	if err != nil {
-		return nil, nil, receivedAt, fmt.Errorf("%s SETUP: %w", phase, err)
+		return nil, nil, times, fmt.Errorf("%s SETUP: %w", phase, err)
 	}
 	var response map[string]interface{}
 	if _, err := plist.Unmarshal(responseBody, &response); err != nil {
-		return nil, nil, receivedAt, fmt.Errorf("unmarshal %s SETUP response: %w", phase, err)
+		return nil, nil, times, fmt.Errorf("unmarshal %s SETUP response: %w", phase, err)
 	}
 	dbg("[SETUP] %s response: %+v", phase, response)
-	return response, headers, receivedAt, nil
+	return response, headers, times, nil
 }
 
 // setupMirrorSession negotiates the mirroring stream with the Apple TV.
@@ -442,6 +278,9 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	audioCtrlConn := audioPorts[1]
 	audioDataConn := audioPorts[2]
 	sessionCtx, cancelSession := context.WithCancel(ctx)
+	if clock != nil {
+		c.followPTP(sessionCtx, cfg.PTP, clock)
+	}
 	var receiverEventConn, dataConn net.Conn
 	setupSucceeded := false
 	defer func() {
@@ -536,7 +375,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	skipRecord := false
 
 	firstSetup := true
-	sendSetup := func(uri, phase string, request map[string]interface{}) (map[string]interface{}, map[string]string, time.Time, error) {
+	sendSetup := func(uri, phase string, request map[string]interface{}) (map[string]interface{}, map[string]string, requestTimes, error) {
 		if !firstSetup {
 			return c.requestSetup(uri, phase, request)
 		}
@@ -615,11 +454,11 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		timingProbesStarted = true
 		go sendNTPTimingProbes(sessionCtx, timingConn, c.host, receiverTimingPort)
 	}
-	configurePTPClock := func(response map[string]interface{}, headers map[string]string, receivedAt time.Time) error {
+	configurePTPClock := func(response map[string]interface{}, headers map[string]string, times requestTimes) error {
 		if timingProtocol != timingProtocolPTP {
 			return nil
 		}
-		if err := clock.configureFromSetup(response, headers, receivedAt); err != nil {
+		if err := clock.configureFromSetup(response, headers, times); err != nil {
 			if policy.permitsLocalPTPClock() {
 				if fallbackErr := clock.configureFromLocalClock(); fallbackErr == nil {
 					dbg("[PTP] %v; using local boot time on receiver timeline 0x%016x", err, clock.identity())
@@ -636,7 +475,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	if policy.fairPlayOnControl() {
 		addFairPlayRootFields(controlPlist, c.FpEkey, c.fpIV, true)
 	}
-	controlResp, controlHeaders, receivedAt, err := sendSetup(audioURI, "control", controlPlist)
+	controlResp, controlHeaders, controlTimes, err := sendSetup(audioURI, "control", controlPlist)
 	videoPrepared := false
 	videoCodec := VideoCodecH264
 	prepareVideo := func(info *ReceiverInfo) error {
@@ -738,7 +577,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		}
 		startReceiverTimingProbes(controlResp)
 		skipRecord, _ = controlResp["skipRecord"].(bool)
-		if err := configurePTPClock(controlResp, controlHeaders, receivedAt); err != nil {
+		if err := configurePTPClock(controlResp, controlHeaders, controlTimes); err != nil {
 			return nil, err
 		}
 		observeEventPort(controlResp)
@@ -806,7 +645,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		videoPhase = 3
 	}
 	dbg("[SETUP] phase %d (audio): ct=%d spf=%d audioFormat=0x%x controlPort=%d", audioPhase, audioCT, audioSPF, audioFmt, audioControlLPort)
-	audioResp, audioRespHeaders, audioRespReceivedAt, err := sendSetup(audioURI, "audio stream", audioSetupPlist)
+	audioResp, audioRespHeaders, audioRespTimes, err := sendSetup(audioURI, "audio stream", audioSetupPlist)
 	// Feature 59 is Apple's advertised streamConnections selector. If the peer
 	// explicitly rejects that shape (or the legacy shape selected when it is
 	// absent), negotiate the alternate descriptor exactly once. This never
@@ -820,7 +659,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 		audioSetupPlist, audioStreamDesc = buildAudioSetup(alternate)
 		debugDumpPlist("alternate audio setup plist", audioSetupPlist)
 		debugDumpPlist("alternate audio stream descriptor", audioStreamDesc)
-		audioResp, audioRespHeaders, audioRespReceivedAt, err = sendSetup(audioURI, "audio stream alternate descriptor", audioSetupPlist)
+		audioResp, audioRespHeaders, audioRespTimes, err = sendSetup(audioURI, "audio stream alternate descriptor", audioSetupPlist)
 	}
 	if err != nil {
 		return nil, err
@@ -833,7 +672,7 @@ func (c *AirPlayClient) setupMirrorSession(ctx context.Context, cfg StreamConfig
 	}
 	if !sessionFirstSetup {
 		skipRecord, _ = audioResp["skipRecord"].(bool)
-		if err := configurePTPClock(audioResp, audioRespHeaders, audioRespReceivedAt); err != nil {
+		if err := configurePTPClock(audioResp, audioRespHeaders, audioRespTimes); err != nil {
 			return nil, err
 		}
 		resolvedInfo := c.info
@@ -2032,14 +1871,15 @@ func (s *MirrorSession) feedbackLoop(ctx context.Context) {
 	// captured frame for several seconds, but the receiver's feedback timeout is
 	// already running by then.
 	sendFeedback := func() {
+		times := requestTimes{sent: time.Now()}
 		body, headers, err := s.client.rtspRequest("POST", "/feedback", "", nil, nil)
-		receivedAt := time.Now()
+		times.received = time.Now()
 		if err != nil {
 			dbg("[FEEDBACK] error: %v", err)
 			return
 		}
 		if s.mediaClock != nil {
-			if err := s.mediaClock.reanchor(headers, receivedAt); err != nil {
+			if err := s.mediaClock.observe(headers, times); err != nil {
 				dbg("[PTP] feedback clock update ignored: %v", err)
 			}
 		}
@@ -2056,6 +1896,19 @@ func (s *MirrorSession) feedbackLoop(ctx context.Context) {
 
 	// Send immediate first feedback — iPhone does this within ~1s of streaming.
 	sendFeedback()
+
+	// A PTP session estimates the receiver's clock from these exchanges;
+	// a few quick ones at the start fill the estimator.
+	if s.mediaClock != nil {
+		for i := 0; i < clockWarmupExchanges; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(clockWarmupInterval):
+				sendFeedback()
+			}
+		}
+	}
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -2145,6 +1998,23 @@ func plistUint64(v interface{}) uint64 {
 		return uint64(n)
 	}
 	return 0
+}
+
+// followPTP feeds clock from the receiver's PTP messages for the session's
+// lifetime, or, without a listener, says the session falls back to the
+// receiver's clock headers.
+func (c *AirPlayClient) followPTP(ctx context.Context, listener *PTPListener, clock *mediaClock) {
+	address, ok := c.conn.RemoteAddr().(*net.TCPAddr)
+	if listener == nil || !ok {
+		log.Printf("timing %s from its RTSP clock headers: no PTP listener", c.host)
+		return
+	}
+	ip, ok := netip.AddrFromSlice(address.IP)
+	if !ok {
+		log.Printf("timing %s from its RTSP clock headers: unusable address %v", c.host, address)
+		return
+	}
+	listener.follow(ctx, ip, clock)
 }
 
 func localIPForConnection(conn net.Conn) (string, error) {

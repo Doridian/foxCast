@@ -1223,6 +1223,10 @@ type StreamConfig struct {
 	// are zero the OS chooses ephemeral ports.
 	PortMin int
 	PortMax int
+
+	// PTP, when set, follows the receiver's PTP clock in PTP sessions.
+	// Without it they are timed from the receiver's RTSP clock headers.
+	PTP *PTPListener
 }
 
 // mirrorCipher implements the AirPlay mirroring AES-CTR encryption scheme

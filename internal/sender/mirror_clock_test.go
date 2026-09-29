@@ -15,9 +15,9 @@ func TestFrameTimeAtPreservesPTPSourcePTS(t *testing.T) {
 	const timeline = uint64(0x48e15caa8da00008)
 	anchorLocal := time.Now().Add(-time.Second)
 	clock := &mediaClock{
-		anchorLocal:     anchorLocal,
-		anchorTimestamp: compactTimestamp(10 * time.Second),
-		timelineID:      timeline,
+		anchorLocal:  anchorLocal,
+		anchorRemote: 10 * time.Second,
+		timelineID:   timeline,
 	}
 	session := &MirrorSession{mediaClock: clock, timestampBias: 500 * time.Millisecond}
 	capturedAt := anchorLocal.Add(800 * time.Millisecond)
@@ -38,9 +38,9 @@ func TestFrameTimeAtPreservesLateSourcePTS(t *testing.T) {
 	const timeline = uint64(0x48e15caa8da00008)
 	now := time.Unix(1700000000, 0)
 	clock := &mediaClock{
-		anchorLocal:     now.Add(-time.Second),
-		anchorTimestamp: compactTimestamp(10 * time.Second),
-		timelineID:      timeline,
+		anchorLocal:  now.Add(-time.Second),
+		anchorRemote: 10 * time.Second,
+		timelineID:   timeline,
 	}
 	session := &MirrorSession{mediaClock: clock, timestampBias: 100 * time.Millisecond}
 	got, gotTimeline, mapped := session.frameTimeAtNow(now.Add(-500*time.Millisecond), now)
@@ -61,9 +61,9 @@ func TestFrameTimeAtFallsBackForZeroSourcePTS(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	want := compactTimestamp(11*time.Second + 100*time.Millisecond)
 	clock := &mediaClock{
-		anchorLocal:     now.Add(-time.Second),
-		anchorTimestamp: compactTimestamp(10 * time.Second),
-		timelineID:      timeline,
+		anchorLocal:  now.Add(-time.Second),
+		anchorRemote: 10 * time.Second,
+		timelineID:   timeline,
 	}
 	session := &MirrorSession{mediaClock: clock, timestampBias: 100 * time.Millisecond}
 	got, gotTimeline, timely := session.frameTimeAtNow(time.Time{}, now)
@@ -118,9 +118,9 @@ func TestStreamFramesUsesAccessUnitPTSWithoutLookahead(t *testing.T) {
 		timestampBias:  500 * time.Millisecond,
 		frameClockNow:  func() time.Time { return now },
 		mediaClock: &mediaClock{
-			anchorLocal:     now.Add(-time.Second),
-			anchorTimestamp: compactTimestamp(10 * time.Second),
-			timelineID:      1,
+			anchorLocal:  now.Add(-time.Second),
+			anchorRemote: 10 * time.Second,
+			timelineID:   1,
 		},
 	}
 	errCh := make(chan error, 1)
@@ -204,9 +204,9 @@ func TestStreamFramesForwardsLateReferenceChain(t *testing.T) {
 			return now
 		},
 		mediaClock: &mediaClock{
-			anchorLocal:     base,
-			anchorTimestamp: compactTimestamp(10 * time.Second),
-			timelineID:      1,
+			anchorLocal:  base,
+			anchorRemote: 10 * time.Second,
+			timelineID:   1,
 		},
 	}
 	err := session.StreamFrames(context.Background(), capture, 0)
@@ -369,21 +369,20 @@ func TestMediaClockConfiguresFromSetupResponse(t *testing.T) {
 		"x-apple-requestreceivedtimestamp": "136989894",
 		"x-apple-processingtime":           "106",
 	}
-	receivedAt := time.Now()
+	sent := time.Now()
 	clock := &mediaClock{}
-	if err := clock.configureFromSetup(response, headers, receivedAt); err != nil {
+	if err := clock.configureFromSetup(response, headers, requestTimes{sent: sent, received: sent.Add(120 * time.Millisecond)}); err != nil {
 		t.Fatal(err)
 	}
 
 	if got := clock.timelineID; got != timeline {
 		t.Fatalf("timeline = 0x%016x, want 0x%016x", got, timeline)
 	}
-	wantTimestamp := compactTimestamp(136990000 * time.Millisecond)
-	if clock.anchorTimestamp != wantTimestamp {
-		t.Fatalf("anchor timestamp = 0x%016x, want 0x%016x", clock.anchorTimestamp, wantTimestamp)
-	}
-	if !clock.anchorLocal.Equal(receivedAt) {
-		t.Fatalf("anchor local time = %v, want %v", clock.anchorLocal, receivedAt)
+	// The middle of the exchange (sent+60ms) is the middle of the receiver's
+	// processing, plus half a millisecond for its truncated timestamps.
+	got, _, ok := clock.at(sent.Add(60*time.Millisecond), 0)
+	if want := compactTimestamp(136989947500 * time.Microsecond); !ok || got != want {
+		t.Fatalf("clock at exchange midpoint = 0x%016x (ok=%v), want 0x%016x", got, ok, want)
 	}
 }
 
@@ -391,7 +390,7 @@ func TestMediaClockRequiresReceiverClockIdentity(t *testing.T) {
 	clock := &mediaClock{}
 	err := clock.configureFromSetup(nil, map[string]string{
 		"x-apple-requestreceivedtimestamp": "1",
-	}, time.Now())
+	}, requestTimes{sent: time.Now(), received: time.Now()})
 	if err == nil {
 		t.Fatal("configureFromSetup succeeded without timingPeerInfo.ClockID")
 	}
@@ -406,7 +405,7 @@ func TestThirdPartyPTPLocalClockFallbackKeepsPTPAudioAndVideoTimeline(t *testing
 	response := map[string]interface{}{
 		"timingPeerInfo": map[string]interface{}{"ClockID": timeline},
 	}
-	if err := clock.configureFromSetup(response, nil, time.Now()); err == nil {
+	if err := clock.configureFromSetup(response, nil, requestTimes{sent: time.Now(), received: time.Now()}); err == nil {
 		t.Fatal("configureFromSetup succeeded without Apple clock headers")
 	}
 	if clock.timelineID != timeline {
@@ -445,34 +444,63 @@ func TestMediaClockRequiresReceiverProcessingTime(t *testing.T) {
 		"timingPeerInfo": map[string]interface{}{"ClockID": uint64(1)},
 	}, map[string]string{
 		"x-apple-requestreceivedtimestamp": "1",
-	}, time.Now())
+	}, requestTimes{sent: time.Now(), received: time.Now()})
 	if err == nil {
 		t.Fatal("configureFromSetup succeeded without X-Apple-ProcessingTime")
 	}
 }
 
-func TestMediaClockReanchorsWithoutChangingTimeline(t *testing.T) {
+func TestMediaClockSlewsTowardLaterSamplesWithoutChangingTimeline(t *testing.T) {
 	const timeline = uint64(0x48e15caa8da00008)
+	start := time.Unix(1, 0)
 	clock := &mediaClock{
-		anchorLocal:     time.Unix(1, 0),
-		anchorTimestamp: compactTimestamp(time.Second),
-		timelineID:      timeline,
+		anchorLocal:  start,
+		anchorRemote: time.Second,
+		timelineID:   timeline,
 	}
-	receivedAt := time.Unix(2, 0)
-	if err := clock.reanchor(map[string]string{
-		"x-apple-requestreceivedtimestamp": "2000",
-		"x-apple-processingtime":           "5",
-	}, receivedAt); err != nil {
+	// A zero-delay exchange at start+1s puts the receiver at 2002.5 ms
+	// (2002 ms truncated, plus half the resolution) where the mapping says
+	// 2000 ms.
+	sent := start.Add(time.Second)
+	if err := clock.observe(map[string]string{
+		"x-apple-requestreceivedtimestamp": "2002",
+		"x-apple-processingtime":           "0",
+	}, requestTimes{sent: sent, received: sent}); err != nil {
 		t.Fatal(err)
-	}
-	if got, want := clock.anchorTimestamp, compactTimestamp(2005*time.Millisecond); got != want {
-		t.Fatalf("anchor timestamp = 0x%016x, want 0x%016x", got, want)
-	}
-	if !clock.anchorLocal.Equal(receivedAt) {
-		t.Fatalf("anchor local time = %v, want %v", clock.anchorLocal, receivedAt)
 	}
 	if clock.timelineID != timeline {
 		t.Fatalf("timeline changed to 0x%016x", clock.timelineID)
+	}
+	// The 2.5 ms correction is slewed in at mediaClockMaxSlew (5 s), not
+	// stepped.
+	for _, check := range []struct {
+		name  string
+		local time.Time
+		want  time.Duration
+	}{
+		{"at the sample", sent, 2 * time.Second},
+		{"halfway through the slew", sent.Add(2500 * time.Millisecond), 4501250 * time.Microsecond},
+		{"after the slew", sent.Add(10 * time.Second), 12002500 * time.Microsecond},
+	} {
+		got := clock.remoteAtLocked(check.local)
+		if diff := got - check.want; diff < -time.Microsecond || diff > time.Microsecond {
+			t.Fatalf("clock %s = %v, want %v", check.name, got, check.want)
+		}
+	}
+}
+
+func TestMediaClockStepsForwardWhenFarBehind(t *testing.T) {
+	start := time.Unix(1, 0)
+	clock := &mediaClock{anchorLocal: start, anchorRemote: time.Second, timelineID: 1}
+	sent := start.Add(time.Second)
+	if err := clock.observe(map[string]string{
+		"x-apple-requestreceivedtimestamp": "2100",
+		"x-apple-processingtime":           "0",
+	}, requestTimes{sent: sent, received: sent}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := clock.anchorRemote, 2100500*time.Microsecond; got != want {
+		t.Fatalf("clock after 100 ms lag = %v, want a step to %v", got, want)
 	}
 }
 
@@ -483,29 +511,28 @@ func TestMediaClockTimingPeerUpdatePreservesContinuity(t *testing.T) {
 	)
 	anchorLocal := time.Unix(10, 0)
 	clock := &mediaClock{
-		anchorLocal:     anchorLocal,
-		anchorTimestamp: compactTimestamp(20 * time.Second),
-		timelineID:      oldTimeline,
+		anchorLocal:  anchorLocal,
+		anchorRemote: 20 * time.Second,
+		timelineID:   oldTimeline,
 	}
-	receivedAt := anchorLocal.Add(1500 * time.Millisecond)
-	if err := clock.updateTimingPeerInfo(map[string]interface{}{"ClockID": newTimeline}, receivedAt); err != nil {
+	at := anchorLocal.Add(1500 * time.Millisecond)
+	before, _, _ := clock.at(at, 0)
+	if err := clock.updateTimingPeerInfo(map[string]interface{}{"ClockID": newTimeline}); err != nil {
 		t.Fatal(err)
 	}
 
-	if clock.timelineID != newTimeline {
-		t.Fatalf("timeline = 0x%016x, want 0x%016x", clock.timelineID, newTimeline)
+	got, gotTimeline, _ := clock.at(at, 0)
+	if gotTimeline != newTimeline {
+		t.Fatalf("timeline = 0x%016x, want 0x%016x", gotTimeline, newTimeline)
 	}
-	if !clock.anchorLocal.Equal(receivedAt) {
-		t.Fatalf("anchor local time = %v, want %v", clock.anchorLocal, receivedAt)
-	}
-	if got, want := clock.anchorTimestamp, compactTimestamp(21500*time.Millisecond); got != want {
-		t.Fatalf("anchor timestamp = 0x%016x, want 0x%016x", got, want)
+	if got != before || got != compactTimestamp(21500*time.Millisecond) {
+		t.Fatalf("timestamp = 0x%016x, want 0x%016x unchanged", got, before)
 	}
 }
 
 func TestMediaClockTimingPeerUpdateRequiresClockIdentity(t *testing.T) {
 	clock := &mediaClock{timelineID: 1}
-	if err := clock.updateTimingPeerInfo(nil, time.Now()); err == nil {
+	if err := clock.updateTimingPeerInfo(nil); err == nil {
 		t.Fatal("timing peer update without ClockID succeeded")
 	}
 	if clock.timelineID != 1 {
@@ -517,18 +544,18 @@ func TestAudioAndVideoClocksStayContinuousAcrossBackwardReanchor(t *testing.T) {
 	const timeline = uint64(0x48e15caa8da00008)
 	now := time.Now()
 	clock := &mediaClock{
-		anchorLocal:     now,
-		anchorTimestamp: compactTimestamp(60 * time.Second),
-		timelineID:      timeline,
+		anchorLocal:  now,
+		anchorRemote: 60 * time.Second,
+		timelineID:   timeline,
 	}
 	session := &MirrorSession{mediaClock: clock, timestampBias: 5 * time.Millisecond}
 
 	firstAudio, firstAudioTimeline := session.audioClockNow()
 	firstVideo, firstVideoTimeline := session.frameTimeNow()
-	if err := clock.reanchor(map[string]string{
+	if err := clock.observe(map[string]string{
 		"x-apple-requestreceivedtimestamp": "1000",
 		"x-apple-processingtime":           "0",
-	}, now); err != nil {
+	}, requestTimes{sent: now, received: now}); err != nil {
 		t.Fatal(err)
 	}
 	secondAudio, secondAudioTimeline := session.audioClockNow()

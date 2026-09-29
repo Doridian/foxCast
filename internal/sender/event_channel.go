@@ -277,7 +277,7 @@ func readEventLine(reader *bufio.Reader, limit int) (string, int, error) {
 // clock. AirPlayReceiver sends this as a binary plist containing
 // {type: "updateTimingPeerInfo", value: <timingPeerInfo>} after asynchronous
 // PTP setup or a timing-peer change.
-func handleEventRequest(request eventRequest, clock *mediaClock, receivedAt time.Time) error {
+func handleEventRequest(request eventRequest, clock *mediaClock) error {
 	if clock == nil || request.method != "POST" || request.path != "/command" || len(request.body) == 0 {
 		return nil
 	}
@@ -298,7 +298,7 @@ func handleEventRequest(request eventRequest, clock *mediaClock, receivedAt time
 	if !ok {
 		return fmt.Errorf("updateTimingPeerInfo omitted value dictionary")
 	}
-	return clock.updateTimingPeerInfo(peer, receivedAt)
+	return clock.updateTimingPeerInfo(peer)
 }
 
 // serveEventChannel acknowledges receiver-to-sender commands until teardown.
@@ -324,8 +324,6 @@ func serveEventChannel(ctx context.Context, channel *eventChannel, clock *mediaC
 			}
 			return err
 		}
-		receivedAt := time.Now()
-
 		dbg("[EVENT] <- %s %s CSeq=%d body=%d", request.method, request.path, request.cseq, request.bodyLength)
 		if event := decodeEvent(request.body); event != nil {
 			if t, _ := event["type"].(string); t != "updateInfo" {
@@ -335,7 +333,7 @@ func serveEventChannel(ctx context.Context, channel *eventChannel, clock *mediaC
 				onEvent(event)
 			}
 		}
-		if err := handleEventRequest(request, clock, receivedAt); err != nil {
+		if err := handleEventRequest(request, clock); err != nil {
 			dbg("[EVENT] command ignored: %v", err)
 		}
 

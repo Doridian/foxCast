@@ -87,6 +87,26 @@ type connectOptions struct {
 	// onConnected, when set, runs once the receiver has described itself,
 	// before pairing.
 	onConnected func(*sender.ReceiverInfo)
+	// ptp, when set, follows PTP receivers' clocks for every session.
+	ptp *sender.PTPListener
+}
+
+// openPTP binds the PTP ports for the sessions of this command. The returned
+// function releases them. Without the ports (they need CAP_NET_BIND_SERVICE
+// or a lowered net.ipv4.ip_unprivileged_port_start), PTP receivers are timed
+// less precisely, from their RTSP clock headers.
+func (o *connectOptions) openPTP() func() {
+	listener, err := sender.ListenPTP()
+	if err != nil {
+		log.Printf("PTP ports 319/320 unavailable (%v); PTP receivers will be timed less precisely", err)
+		return func() {}
+	}
+	o.ptp = listener
+	return func() {
+		if err := listener.Close(); err != nil {
+			log.Printf("close PTP listener: %v", err)
+		}
+	}
 }
 
 func (o *connectOptions) register(flags *flag.FlagSet) {

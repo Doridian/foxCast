@@ -43,6 +43,7 @@ func cmdGUI(ctx context.Context, args []string) error {
 		return fmt.Errorf("load credentials: %w", err)
 	}
 	b.opts.store = store
+	defer b.opts.openPTP()()
 	return gui.Run(ctx, b)
 }
 

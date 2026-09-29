@@ -153,6 +153,7 @@ Flags:
 	if opts.store, err = newCredentialStore(opts.credBackend, opts.credFile); err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
+	defer opts.openPTP()()
 	return runGroup(ctx, &opts, layout, members, audioSource, testMode, !keepDefaultSink)
 }
 
@@ -237,7 +238,7 @@ func runGroup(ctx context.Context, opts *connectOptions, layout sender.ChannelLa
 // setupGroupSession is runSpeaker's session setup, with its one retry for a
 // receiver that asks for a password only at SETUP.
 func setupGroupSession(ctx context.Context, opts *connectOptions, conn *connection) (*sender.MirrorSession, error) {
-	cfg := sender.StreamConfig{PortMin: opts.portMin, PortMax: opts.portMax}
+	cfg := sender.StreamConfig{PortMin: opts.portMin, PortMax: opts.portMax, PTP: opts.ptp}
 	session, err := conn.client.SetupAudioOnly(ctx, cfg)
 	if !errors.Is(err, sender.ErrCredentialsRequired) {
 		return session, err

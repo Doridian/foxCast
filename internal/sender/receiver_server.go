@@ -557,6 +557,8 @@ type receiverConnection struct {
 	// audioOnly is set once a non-mirroring session carries an audio
 	// stream: a sender using the receiver as a speaker.
 	audioOnly bool
+	// sessionTiming is the timingProtocol of the session descriptor.
+	sessionTiming string
 }
 
 type receiverSessionState uint8
@@ -1035,6 +1037,7 @@ func (c *receiverConnection) handleSetup(request receiverRequest) receiverRespon
 			mirroring, _ := setup["isScreenMirroringSession"].(bool)
 			_, described := setup["timingProtocol"]
 			c.playback = kind == receiverSetupControl && described && !mirroring
+			c.sessionTiming, _ = setup["timingProtocol"].(string)
 		}
 		return result
 	}
@@ -1123,6 +1126,7 @@ func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[s
 		if protocol != expected {
 			return fmt.Errorf("timingProtocol is %q, want %q", protocol, expected)
 		}
+		c.sessionTiming = protocol
 		switch expected {
 		case timingProtocolNTP:
 			if plistInt(setup["timingPort"]) <= 0 {
@@ -1164,6 +1168,11 @@ func (c *receiverConnection) validateSetup(setup map[string]any, streams []map[s
 	}
 	if err := validateReceiverAudioRouting(stream, audioOnly); err != nil {
 		return err
+	}
+	// HomePods (AirTunes 980.77) accept an NTP speaker session but answer 400
+	// to its audio stream; the stream is accepted once the session uses PTP.
+	if audioOnly && profile.timingProtocol == timingProtocolPTP && c.sessionTiming == timingProtocolNTP {
+		return fmt.Errorf("PTP receiver does not play a speaker stream timed by NTP")
 	}
 	_, hasConnections := stream["streamConnections"].(map[string]any)
 	hasControlPort := plistInt(stream["controlPort"]) > 0
