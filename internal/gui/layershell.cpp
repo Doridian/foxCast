@@ -1,4 +1,4 @@
-//go:build gui
+//go:build !nogui
 
 #include <LayerShellQt/window.h>
 #include <QMargins>

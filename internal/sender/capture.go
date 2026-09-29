@@ -1,7 +1,6 @@
 package sender
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,15 +8,15 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+
+	"git.foxden.network/FoxDen/foxCast/internal/gst"
 )
 
 // CaptureConfig holds screen capture settings.
@@ -39,8 +38,8 @@ type CaptureConfig struct {
 	ShowCursor bool // show the mouse cursor in the captured video (Wayland and X11)
 
 	// DeferSource leaves the Wayland portal alone during PrepareCapture: Start
-	// then streams a "choosing what to share" placeholder, and PrepareSource
-	// asks for the real source once the receiver is showing it.
+	// then streams a "choosing what to share" placeholder, and a
+	// CaptureSwitcher asks for the real source once the receiver shows it.
 	DeferSource bool
 
 	// RestoreToken and SaveRestoreToken let the Wayland portal skip its source
@@ -92,13 +91,13 @@ const (
 
 // ScreenCapture manages screen capture via GStreamer.
 type ScreenCapture struct {
-	cmd      *exec.Cmd // gst-launch-1.0 process
+	cmd      *gstCommand // in-process GStreamer pipeline
 	stdout   io.ReadCloser
 	frames   videoAccessUnitReader
 	cancel   context.CancelFunc
 	pwNodeID uint32
 	dbusConn *dbus.Conn    // portal session D-Bus connection (must stay open for Wayland)
-	fader    *videoFader   // fade overlay input; nil without one
+	mixer    *videoMixer   // Wayland session compositor; nil for other captures
 	waitCh   chan struct{} // closed when process exits
 	waitErr  error         // set before waitCh is closed
 	stopped  bool
@@ -232,59 +231,44 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 // requestPortalSource asks the screencast portal for a source and keeps its
 // PipeWire connection for Start.
 func (p *CapturePreparation) requestPortalSource(ctx context.Context, restoreToken string) error {
-	cfg := p.cfg
-	nodeID, pwFd, dbusConn, newToken, err := requestScreencast(ctx, restoreToken, cfg.SaveRestoreToken != nil, cfg.ShowCursor, &p.streamSize)
+	src, err := p.pickPortalSource(ctx, restoreToken)
 	if err != nil {
+		return err
+	}
+	pwFd, err := src.openRemote()
+	if err != nil {
+		src.Close()
 		return fmt.Errorf("screencast portal: %w", err)
+	}
+	p.pwNodeID = src.nodeID
+	p.pwFd = pwFd
+	p.dbusConn = src.conn
+	p.streamSize = src.streamSize
+	return nil
+}
+
+// pickPortalSource shows the portal picker (skipped by a restore token) and
+// saves the token the portal returns.
+func (p *CapturePreparation) pickPortalSource(ctx context.Context, restoreToken string) (*portalSource, error) {
+	cfg := p.cfg
+	src, newToken, err := requestScreencast(ctx, restoreToken, cfg.SaveRestoreToken != nil, cfg.ShowCursor)
+	if err != nil {
+		return nil, fmt.Errorf("screencast portal: %w", err)
 	}
 	if newToken != "" && cfg.SaveRestoreToken != nil {
 		if err := cfg.SaveRestoreToken(newToken); err != nil {
 			log.Printf("[CAPTURE] warning: failed to save screencast restore token: %v", err)
 		}
 	}
-	dbg("pipewire node ID: %d", nodeID)
-	p.pwNodeID = nodeID
-	p.pwFd = pwFd
-	p.dbusConn = dbusConn
-	return nil
+	dbg("pipewire node ID: %d", src.nodeID)
+	return src, nil
 }
 
-// CanSwitchSource reports whether PrepareSourceSwitch can offer a different
+// CanSwitchSource reports whether a CaptureSwitcher can offer a different
 // source. Only the Wayland portal has a picker; X11 and test captures always
 // capture the same thing.
 func (p *CapturePreparation) CanSwitchSource() bool {
 	return p != nil && p.kind == capturePreparationWayland
-}
-
-// PrepareSource shows the screencast portal's picker and returns a preparation
-// for the chosen source with p's settings. restore lets a saved restore token
-// (-remember-source) skip the picker; a mid-session switch passes false. It
-// skips the encoder preflight PrepareCapture already ran. Start the result
-// with the running capture's canvas and codec, then hand it to
-// BroadcastCapture.SwitchSource.
-func (p *CapturePreparation) PrepareSource(ctx context.Context, restore bool) (*CapturePreparation, error) {
-	if !p.CanSwitchSource() {
-		return nil, fmt.Errorf("capture source can only be switched through the Wayland screencast portal")
-	}
-	p.mu.Lock()
-	restoreToken := ""
-	if restore {
-		restoreToken = p.cfg.RestoreToken
-	}
-	next := &CapturePreparation{
-		ctx:                  ctx,
-		cfg:                  p.cfg,
-		kind:                 p.kind,
-		timestampedOutput:    p.timestampedOutput,
-		automaticHEVCAvail:   p.automaticHEVCAvail,
-		measuredVideoLatency: p.measuredVideoLatency,
-	}
-	p.mu.Unlock()
-	next.cfg.DeferSource = false
-	if err := next.requestPortalSource(ctx, restoreToken); err != nil {
-		return nil, err
-	}
-	return next, nil
 }
 
 // PrepareTestCapture validates a synthetic capture without starting its
@@ -444,7 +428,7 @@ func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, 
 	switch kind {
 	case capturePreparationWayland:
 		if cfg.DeferSource {
-			return startPlaceholderCapture(ctx, cfg, encoder, timestampedOutput)
+			return startMixerCapture(ctx, cfg, encoder, timestampedOutput)
 		}
 		return startPreparedWaylandCapture(ctx, cfg, encoder, nodeID, pwFd, dbusConn, streamSize, timestampedOutput)
 	case capturePreparationX11:
@@ -507,7 +491,7 @@ func (p *CapturePreparation) Close() {
 }
 
 func hasGstElement(name string) bool {
-	return exec.Command("gst-inspect-1.0", name).Run() == nil
+	return gst.HasElement(name)
 }
 
 func supportsTimestampedVideoOutput(codec VideoCodec) bool {
@@ -757,35 +741,6 @@ func automaticHEVCProfile(hwaccel string, fps int) (bool, time.Duration) {
 	return result.ok, result.lead
 }
 
-// startGStreamerCommand starts a capture child whose lifetime cannot outlive
-// doubletake. Linux delivers Pdeathsig when the creating OS thread exits, not
-// strictly when the whole process exits, so the supervising goroutine keeps
-// that thread locked until Wait completes.
-func startGStreamerCommand(cmd *exec.Cmd) (<-chan error, error) {
-	started := make(chan error, 1)
-	waitResult := make(chan error, 1)
-
-	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-
-		cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-		err := cmd.Start()
-		started <- err
-		if err != nil {
-			close(waitResult)
-			return
-		}
-		waitResult <- cmd.Wait()
-		close(waitResult)
-	}()
-
-	if err := <-started; err != nil {
-		return nil, err
-	}
-	return waitResult, nil
-}
-
 // gstStage is one GStreamer element (or caps filter) followed by its arguments.
 // Keeping separators out of stages makes it difficult for source-specific
 // pipelines to accidentally diverge in the shared encoding path.
@@ -942,6 +897,19 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 		}
 		return nil, fmt.Errorf("prepared Wayland capture is missing portal resources")
 	}
+	capture, err := startWaylandPipeline(ctx, cfg, encoderParts, nodeID, pwFd, streamSize, timestampedOutput)
+	if err != nil {
+		dbusConn.Close()
+		return nil, err
+	}
+	capture.dbusConn = dbusConn
+	return capture, nil
+}
+
+// startWaylandPipeline encodes PipeWire node nodeID, read through pwFd (which
+// it closes).
+func startWaylandPipeline(ctx context.Context, cfg CaptureConfig, encoderParts encoderResult, nodeID uint32, pwFd *os.File, streamSize [2]int, timestampedOutput bool) (*ScreenCapture, error) {
+	defer pwFd.Close() // the child inherits it
 	captureCtx, cancel := context.WithCancel(ctx)
 
 	fps := cfg.FPS
@@ -971,32 +939,13 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 
 	var afterScale []gstStage
 	maxWidth, maxHeight := cfg.MaxWidth, cfg.MaxHeight
-	// The content fades in from black once the pipeline runs (see
-	// capture_fade.go); without the compositor it simply appears.
-	var fader *videoFader
-	var overlay *os.File
-	const overlayFdNum = 4
 	if hasCompositor {
-		stages := waylandCompositorStages(streamSize, maxWidth, maxHeight, fps)
-		canvasWidth, canvasHeight := maxWidth&^1, maxHeight&^1
-		if canvasWidth <= 0 || canvasHeight <= 0 {
-			canvasWidth, canvasHeight = streamSize[0]&^1, streamSize[1]&^1
-		}
-		var err error
-		if fader, overlay, err = newVideoFader(fps, max(1, fps/fadeHoldDiv), true); err != nil {
-			log.Printf("[CAPTURE] warning: %v; content will not fade in", err)
-		} else {
-			stages = withFadeOverlay(stages, canvasWidth, canvasHeight)
-		}
-		beforeConvert = append(beforeConvert, stages...)
+		beforeConvert = append(beforeConvert, waylandCompositorStages(streamSize, maxWidth, maxHeight, fps)...)
 		// The frames were already fitted to the compositor canvas.
 		maxWidth, maxHeight = 0, 0
-	} else {
-		log.Printf("[CAPTURE] idle-frame compositor unavailable; using portal frame timing")
-	}
-	if hasCompositor {
 		afterScale = append(afterScale, lowLatencyVideoQueueStage())
 	} else {
+		log.Printf("[CAPTURE] idle-frame compositor unavailable; using portal frame timing")
 		afterScale = append(afterScale,
 			gstStage{"videorate", "drop-only=true", "skip-to-first=true"},
 			frameRateStage(fps),
@@ -1005,26 +954,16 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 	}
 	gstArgs := buildGstVideoPipeline(source, beforeConvert, afterScale, encoderParts, maxWidth, maxHeight, timestampedOutput)
 	extraFiles := []*os.File{pwFd}
-	if overlay != nil {
-		gstArgs = append(gstArgs, fadeOverlayChain(overlayFdNum, fps)...)
-		extraFiles = append(extraFiles, overlay)
-		defer overlay.Close() // the child inherits it
-	}
 
 	dbg("[CAPTURE] gst-launch-1.0 (wayland) %s", strings.Join(gstArgs, " "))
-	cmd := exec.CommandContext(captureCtx, "gst-launch-1.0", gstArgs...)
+	cmd := newGstCommand(captureCtx, gstArgs...)
 	cmd.ExtraFiles = extraFiles
 
 	capture, err := startCaptureCommand(cmd, cancel, encoderParts.codec, timestampedOutput)
-	pwFd.Close() // the child inherited it
 	if err != nil {
-		fader.Close()
-		dbusConn.Close()
 		return nil, err
 	}
 	capture.pwNodeID = nodeID
-	capture.dbusConn = dbusConn
-	capture.fader = fader
 	return capture, nil
 }
 
@@ -1072,22 +1011,19 @@ func startPreparedX11Capture(ctx context.Context, cfg CaptureConfig, encoder enc
 	gstArgs := buildGstVideoPipeline(ximageSrcArgs, beforeConvert, nil, encoder, cfg.MaxWidth, cfg.MaxHeight, timestampedOutput)
 
 	dbg("[CAPTURE] gst-launch-1.0 (x11) %s", strings.Join(gstArgs, " "))
-	cmd := exec.CommandContext(captureCtx, "gst-launch-1.0", gstArgs...)
+	cmd := newGstCommand(captureCtx, gstArgs...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("gst stdout pipe: %w", err)
 	}
-	stderr, _ := cmd.StderrPipe()
 
 	waitResult, err := startGStreamerCommand(cmd)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("start gst-launch: %w", err)
 	}
-
-	go logStderr("GST", stderr)
 
 	capture := &ScreenCapture{
 		cmd:    cmd,
@@ -1136,19 +1072,11 @@ func (sc *ScreenCapture) ReadVideoAccessUnit() (VideoAccessUnit, error) {
 	return sc.frames.ReadVideoAccessUnit()
 }
 
-// FadeOut fades the capture to black and returns a channel closed once black
-// has been encoded. The channel is closed at once for a capture that cannot
-// fade (X11, test, or content whose fade-in has finished), which then cuts.
-func (sc *ScreenCapture) FadeOut() <-chan struct{} {
-	return sc.fader.fadeOut()
-}
-
 func (sc *ScreenCapture) Stop() {
 	if sc.stopped {
 		return
 	}
 	sc.stopped = true
-	sc.fader.Close()
 	if sc.cancel != nil {
 		sc.cancel()
 	}
@@ -1162,18 +1090,10 @@ func (sc *ScreenCapture) Stop() {
 		sc.dbusConn.Close()
 	}
 
-	if sc.cmd != nil && sc.cmd.Process != nil {
-		_ = sc.cmd.Process.Signal(os.Interrupt)
+	if sc.cmd != nil {
+		sc.cmd.Kill()
 	}
-
-	select {
-	case <-sc.waitCh:
-	case <-time.After(2 * time.Second):
-		if sc.cmd != nil && sc.cmd.Process != nil {
-			_ = sc.cmd.Process.Kill()
-		}
-		<-sc.waitCh
-	}
+	<-sc.waitCh
 }
 
 // detectPrimaryMonitor queries xrandr to find the primary monitor's geometry.
@@ -1359,6 +1279,8 @@ func selectGstEncoderWithProbe(cfg CaptureConfig, hasElement func(string) bool, 
 				fmt.Sprintf("gop-size=%d", keyframeInterval),
 				"rate-control=bitrate",
 				"usage-type=screen",
+				// A fade changes every frame; scene cuts would make each one a keyframe.
+				"scene-change-detection=false",
 			}},
 		},
 		{
@@ -1373,7 +1295,8 @@ func selectGstEncoderWithProbe(cfg CaptureConfig, hasElement func(string) bool, 
 				fmt.Sprintf("vbv-buf-capacity=%d", vbvBuf),
 				fmt.Sprintf("key-int-max=%d", keyframeInterval),
 				"pass=0",
-				fmt.Sprintf("option-string=vbv-maxrate=%d", maxrate),
+				// scenecut=0: a fade would otherwise be encoded as keyframes.
+				fmt.Sprintf("option-string=vbv-maxrate=%d:scenecut=0", maxrate),
 				"bframes=0",
 				"sliced-threads=true",
 				"byte-stream=true",
@@ -1487,17 +1410,12 @@ func startPreparedTestCapture(ctx context.Context, cfg CaptureConfig, encoder en
 	gstArgs := buildGstVideoPipeline(source, beforeConvert, nil, encoder, cfg.MaxWidth, cfg.MaxHeight, timestampedOutput)
 
 	dbg("[CAPTURE] launching gst-launch-1.0 (test mode) %s", strings.Join(gstArgs, " "))
-	cmd := exec.CommandContext(captureCtx, "gst-launch-1.0", gstArgs...)
+	cmd := newGstCommand(captureCtx, gstArgs...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("gst stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("gst stderr pipe: %w", err)
 	}
 
 	waitResult, err := startGStreamerCommand(cmd)
@@ -1505,8 +1423,6 @@ func startPreparedTestCapture(ctx context.Context, cfg CaptureConfig, encoder en
 		cancel()
 		return nil, fmt.Errorf("start gst-launch-1.0: %w", err)
 	}
-
-	go logStderr("GST", stderr)
 
 	capture := &ScreenCapture{
 		cmd:    cmd,
@@ -1523,21 +1439,6 @@ func startPreparedTestCapture(ctx context.Context, cfg CaptureConfig, encoder en
 	}()
 
 	return capture, nil
-}
-
-func logStderr(prefix string, r io.Reader) {
-	if r == nil {
-		return
-	}
-	scanner := bufio.NewScanner(r)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	for scanner.Scan() {
-		dbg("[%s] %s", prefix, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		dbg("[%s] stderr read error: %v", prefix, err)
-	}
 }
 
 func captureBitrateKbps(cfg CaptureConfig) int {
@@ -1609,15 +1510,48 @@ func vbvBufferKbit(bitrateKbps, fps int) int {
 	return vbv
 }
 
-// requestScreencast uses the xdg-desktop-portal D-Bus API to request screen capture
-// permission and returns a PipeWire node ID, an fd for the portal's PipeWire remote,
-// the D-Bus connection (which must stay open to keep the screencast session alive),
-// and a fresh restore token when the portal grants persistence. Without persist
-// the portal forgets the choice, so the source picker appears on every call.
-func requestScreencast(ctx context.Context, restoreToken string, persist, showCursor bool, dimensions *[2]int) (uint32, *os.File, *dbus.Conn, string, error) {
+// portalSource is one screencast portal session and the PipeWire node it
+// shares. Its D-Bus connection keeps the session alive, and openRemote can be
+// called for each pipeline that reads the node.
+type portalSource struct {
+	conn       *dbus.Conn
+	portal     dbus.BusObject
+	session    dbus.ObjectPath
+	nodeID     uint32
+	streamSize [2]int
+}
+
+// openRemote returns an fd for the portal's PipeWire remote. pipewiresrc MUST
+// use it to connect; without it, it connects to the global PipeWire instance
+// which does not have the portal node and returns EINVAL.
+func (s *portalSource) openRemote() (*os.File, error) {
+	call := s.portal.Call("org.freedesktop.portal.ScreenCast.OpenPipeWireRemote", 0,
+		s.session, map[string]dbus.Variant{})
+	if call.Err != nil {
+		return nil, fmt.Errorf("OpenPipeWireRemote: %w", call.Err)
+	}
+	var pwFD dbus.UnixFD
+	if err := call.Store(&pwFD); err != nil {
+		return nil, fmt.Errorf("store pipewire fd: %w", err)
+	}
+	return os.NewFile(uintptr(pwFD), "pipewire-remote"), nil
+}
+
+// Close ends the portal session.
+func (s *portalSource) Close() {
+	if s != nil && s.conn != nil {
+		_ = s.conn.Close()
+	}
+}
+
+// requestScreencast uses the xdg-desktop-portal D-Bus API to request screen
+// capture permission. It returns the portal session and a fresh restore token
+// when the portal grants persistence. Without persist the portal forgets the
+// choice, so the source picker appears on every call.
+func requestScreencast(ctx context.Context, restoreToken string, persist, showCursor bool) (*portalSource, string, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return 0, nil, nil, "", fmt.Errorf("connect session bus: %w", err)
+		return nil, "", fmt.Errorf("connect session bus: %w", err)
 	}
 
 	portal := conn.Object("org.freedesktop.portal.Desktop",
@@ -1635,23 +1569,23 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 	call := portal.Call("org.freedesktop.portal.ScreenCast.CreateSession", 0, sessionOpts)
 	if call.Err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("CreateSession: %w", call.Err)
+		return nil, "", fmt.Errorf("CreateSession: %w", call.Err)
 	}
 	if err := call.Store(&requestHandle); err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("store create-session request handle: %w", err)
+		return nil, "", fmt.Errorf("store create-session request handle: %w", err)
 	}
 
 	createResult, err := waitForResponseWithResult(ctx, conn, requestHandle)
 	if err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("session response: %w", err)
+		return nil, "", fmt.Errorf("session response: %w", err)
 	}
 
 	sessionPath, err := sessionHandleFromResult(createResult)
 	if err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("session handle: %w", err)
+		return nil, "", fmt.Errorf("session handle: %w", err)
 	}
 
 	// cursor_mode: HIDDEN=1, EMBEDDED=2 (cursor baked into the stream)
@@ -1685,16 +1619,16 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 		sessionPath, selectOpts)
 	if call.Err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("SelectSources: %w", call.Err)
+		return nil, "", fmt.Errorf("SelectSources: %w", call.Err)
 	}
 	if err := call.Store(&requestHandle); err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("store select-sources request handle: %w", err)
+		return nil, "", fmt.Errorf("store select-sources request handle: %w", err)
 	}
 
 	if _, err = waitForResponseWithResult(ctx, conn, requestHandle); err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("select response: %w", err)
+		return nil, "", fmt.Errorf("select response: %w", err)
 	}
 
 	// Start the screencast
@@ -1707,17 +1641,17 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 		sessionPath, "", startOpts)
 	if call.Err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("Start: %w", call.Err)
+		return nil, "", fmt.Errorf("Start: %w", call.Err)
 	}
 	if err := call.Store(&requestHandle); err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("store start request handle: %w", err)
+		return nil, "", fmt.Errorf("store start request handle: %w", err)
 	}
 
 	startResult, err := waitForResponseWithResult(ctx, conn, requestHandle)
 	if err != nil {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("start response: %w", err)
+		return nil, "", fmt.Errorf("start response: %w", err)
 	}
 
 	newRestoreToken := ""
@@ -1725,7 +1659,7 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 		value, ok := variant.Value().(string)
 		if !ok {
 			conn.Close()
-			return 0, nil, nil, "", fmt.Errorf("unexpected restore token type: %T", variant.Value())
+			return nil, "", fmt.Errorf("unexpected restore token type: %T", variant.Value())
 		}
 		newRestoreToken = value
 	}
@@ -1734,7 +1668,7 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 	streams, ok := startResult["streams"]
 	if !ok {
 		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("no streams in start response")
+		return nil, "", fmt.Errorf("no streams in start response")
 	}
 
 	var nodeID uint32
@@ -1748,28 +1682,28 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 					nodeID = nid
 				} else {
 					conn.Close()
-					return 0, nil, nil, "", fmt.Errorf("unexpected node ID type: %T", tuple[0])
+					return nil, "", fmt.Errorf("unexpected node ID type: %T", tuple[0])
 				}
 				if len(tuple) > 1 {
 					streamProperties, _ = tuple[1].(map[string]dbus.Variant)
 				}
 			} else {
 				conn.Close()
-				return 0, nil, nil, "", fmt.Errorf("unexpected streams format: %T", streams.Value())
+				return nil, "", fmt.Errorf("unexpected streams format: %T", streams.Value())
 			}
 		} else {
 			conn.Close()
-			return 0, nil, nil, "", fmt.Errorf("unexpected streams format: %T", streams.Value())
+			return nil, "", fmt.Errorf("unexpected streams format: %T", streams.Value())
 		}
 	} else {
 		if len(streamList) == 0 || len(streamList[0]) == 0 {
 			conn.Close()
-			return 0, nil, nil, "", fmt.Errorf("empty streams list")
+			return nil, "", fmt.Errorf("empty streams list")
 		}
 		nid, ok2 := streamList[0][0].(uint32)
 		if !ok2 {
 			conn.Close()
-			return 0, nil, nil, "", fmt.Errorf("unexpected node ID type: %T", streamList[0][0])
+			return nil, "", fmt.Errorf("unexpected node ID type: %T", streamList[0][0])
 		}
 		nodeID = nid
 		if len(streamList[0]) > 1 {
@@ -1777,31 +1711,14 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 		}
 	}
 
-	if dimensions != nil {
-		if width, height, ok := portalStreamDimensions(streamProperties); ok {
-			dimensions[0], dimensions[1] = width, height
-			dbg("[CAPTURE] portal stream size: %dx%d", width, height)
-		} else {
-			dbg("[CAPTURE] portal stream properties did not contain a usable size: %#v", streamProperties)
-		}
+	src := &portalSource{conn: conn, portal: portal, session: sessionPath, nodeID: nodeID}
+	if width, height, ok := portalStreamDimensions(streamProperties); ok {
+		src.streamSize = [2]int{width, height}
+		dbg("[CAPTURE] portal stream size: %dx%d", width, height)
+	} else {
+		dbg("[CAPTURE] portal stream properties did not contain a usable size: %#v", streamProperties)
 	}
-
-	// OpenPipeWireRemote returns a Unix fd for the portal's PipeWire remote.
-	// pipewiresrc MUST use this fd to connect; without it, it connects to the
-	// global PipeWire instance which does not have the portal node and returns EINVAL.
-	call = portal.Call("org.freedesktop.portal.ScreenCast.OpenPipeWireRemote", 0,
-		sessionPath, map[string]dbus.Variant{})
-	if call.Err != nil {
-		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("OpenPipeWireRemote: %w", call.Err)
-	}
-	var pwFD dbus.UnixFD
-	if err := call.Store(&pwFD); err != nil {
-		conn.Close()
-		return 0, nil, nil, "", fmt.Errorf("store pipewire fd: %w", err)
-	}
-
-	return nodeID, os.NewFile(uintptr(pwFD), "pipewire-remote"), conn, newRestoreToken, nil
+	return src, newRestoreToken, nil
 }
 
 func portalStreamDimensions(properties map[string]dbus.Variant) (int, int, bool) {

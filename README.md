@@ -60,7 +60,7 @@ must let it in: pin the port with `-http-port 7020` (and `-port-range` for timin
 Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOXCAST_CODE`
 (preferred over `-code`). `-debug` or `FOXCAST_TRACE=1` enables protocol logging.
 
-Mirroring needs GStreamer (`gst-launch-1.0` with base/good/bad/ugly/libav plugins) and, on
+Mirroring needs GStreamer (base/good/bad/ugly/libav plugins, run in-process) and, on
 Wayland, xdg-desktop-portal. On Wayland foxCast connects first, shows "Choosing what to share…" on
 the receiver, and then the portal asks for a screen or window; `-remember-source` reuses the last
 choice for that receiver instead. The receiver probes a local UDP timing port during SETUP; use
@@ -74,11 +74,12 @@ receiver to mirror the screen, play a file (native file picker) or paste a URL, 
 computer's sound on it (Play Sound — the only action for speakers), or to forget its pairing. PIN and password prompts appear as dialogs. The `mirror`, `play` and credential flags
 work here too and apply to every session.
 
-The GUI uses Qt 6 through [miqt](https://github.com/mappu/miqt), so it needs CGo and the Qt 6
-development files, and is behind a build tag:
+The GUI uses Qt 6 through [miqt](https://github.com/mappu/miqt) and is part of the default
+build. foxCast links GStreamer and Qt with CGo, so building needs their development files:
 
 ```sh
-go build -tags gui ./cmd/foxCast            # needs Qt 6 (qt6-base) and, for Wayland, layer-shell-qt
+go build ./cmd/foxCast                      # needs GStreamer and Qt 6 (qt6-base, layer-shell-qt) dev files
+go build -tags nogui ./cmd/foxCast          # without the tray app: GStreamer dev files only
 install -Dm644 contrib/foxcast.desktop ~/.local/share/applications/foxcast.desktop
 ```
 

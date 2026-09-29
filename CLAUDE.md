@@ -3,7 +3,7 @@
 ## Module and language
 
 - Go module: `git.foxden.network/FoxDen/foxCast`
-- Language: Go (no Rust, no CGo unless absolutely unavoidable — the optional `fdk_aac` and `gui` build tags are the exceptions)
+- Language: Go (no Rust). CGo is used for GStreamer (`internal/gst`, always) and Qt (`internal/gui`, unless built with `-tags nogui`), and for the optional `fdk_aac` tag; don't add other C dependencies unless absolutely unavoidable
 - Minimum Go version: whatever is in `go.mod`
 - License: LGPL-3.0-or-later (`LICENSE`, `COPYING.GPL`)
 
@@ -16,7 +16,11 @@ internal/
   sender/                    AirPlay sender core: discovery, HAP/legacy pairing,
                              encrypted RTSP, FairPlay SAP, event channel,
                              URL playback (playback.go), screen mirroring,
-                             audio, GStreamer capture, in-process test receiver
+                             audio, GStreamer capture (in-process pipelines, gst_command.go;
+                             Wayland session compositor with fades, capture_mixer.go),
+                             in-process test receiver
+  gst/                       thin CGo binding to GStreamer: parse-launch pipelines, bus,
+                             properties, adding/removing bins while playing
   fileserver/                local HTTP server for `play <file>` (file or transmux handler)
   mediasource/               random/streaming access to a local path or HTTP(S) Range URL
   mkv/                       Matroska demuxer (header, tracks, Cues, cluster reader)
@@ -24,8 +28,8 @@ internal/
   fmp4/                      fragmented MP4 init/media segment writer
   transmux/                  Matroska → HLS (fMP4) VOD server used by `play`
   gui/                       tray app for `foxCast gui`: Qt 6 (miqt) UI, StatusNotifierItem +
-                             dbusmenu over D-Bus, LayerShellQt popup placement; Qt files need
-                             `-tags gui`, the model (model.go) is toolkit-free and tested untagged
+                             dbusmenu over D-Bus, LayerShellQt popup placement; `-tags nogui`
+                             drops the Qt files, the model (model.go) is toolkit-free
 contrib/                     desktop entry
 docs/                        protocol research and implementation notes
 ```
@@ -36,8 +40,8 @@ docs/                        protocol research and implementation notes
 ## Commands
 
 ```bash
-go build ./...                          # build everything (without the GUI)
-go build -tags gui ./cmd/foxCast        # with `foxCast gui` (needs Qt 6 dev files, CGo)
+go build ./...                          # build everything (needs GStreamer and Qt 6 dev files, CGo)
+go build -tags nogui ./cmd/foxCast      # without `foxCast gui` (GStreamer dev files only)
 go test ./...                           # all tests (includes end-to-end tests against the in-process receiver)
 FOXCAST_TRACE=1 go run ./cmd/foxCast …  # CLI with verbose protocol logging (same as -debug)
 go run ./cmd/foxCast -- <args>          # run the CLI
@@ -55,7 +59,7 @@ go run ./cmd/foxCast-test-receiver -profile modern -auth none -listen 127.0.0.1:
 
 - Errors: return them, don't log-and-swallow. Log at the call site where context is available.
 - No `init()` functions.
-- No global mutable state outside of `main`. Known exceptions inherited from doubletake: `sender.SetDebugMode` and `sender.SetTargetLatency` (process-wide settings set once by the CLI).
+- No global mutable state outside of `main`. Known exceptions inherited from doubletake: `sender.SetDebugMode` and `sender.SetTargetLatency` (process-wide settings set once by the CLI). `gst.Init` guards `gst_init`, which is process-wide by nature.
 - Credentials: `~/.config/foxcast/credentials.json` (one file, keyed by receiver device ID), or the system keyring with `-cred-backend keyring`.
 - All protocol constants (HKDF salts, feature flag bits, etc.) live in a `const` block in the relevant package, not inline.
 
@@ -66,8 +70,8 @@ go run ./cmd/foxCast-test-receiver -profile modern -auth none -listen 127.0.0.1:
 - `golang.org/x/crypto`, `github.com/aead/chacha20poly1305` — X25519, Ed25519, ChaCha20-Poly1305, HKDF
 - `github.com/godbus/dbus/v5` — xdg-desktop-portal screencast (Wayland)
 - `github.com/zalando/go-keyring` — optional keyring credential backend
-- GStreamer (runtime, via `gst-launch-1.0` subprocess) — capture and encoding for mirroring
-- `github.com/mappu/miqt` — Qt 6 bindings for the GUI (`gui` tag only); UI toolkit choices stay with Qt/KDE so Plasma theming applies
+- GStreamer (linked through `internal/gst`) — capture and encoding for mirroring and audio. Pipelines are still written as gst-launch argument lists and run in-process by `gstCommand`
+- `github.com/mappu/miqt` — Qt 6 bindings for the GUI (dropped by `-tags nogui`); UI toolkit choices stay with Qt/KDE so Plasma theming applies
 
 ## Protocol documentation
 

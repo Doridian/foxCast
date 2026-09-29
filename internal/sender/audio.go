@@ -107,7 +107,7 @@ func randomRTPTime(reader io.Reader) (uint32, error) {
 
 // AudioCapture manages audio capture via GStreamer and local ALAC encoding.
 type AudioCapture struct {
-	gstCmd    *exec.Cmd
+	gstCmd    *gstCommand
 	pcmPipe   io.ReadCloser
 	pcmFrames audioPCMFrameReader
 	cancel    context.CancelFunc
@@ -248,7 +248,7 @@ func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec
 	gstArgs := audioCapturePipelineArgs(srcArgs, codec, timestamped)
 	dbg("[AUDIO] PCM capture pipeline: gst-launch-1.0 %s", strings.Join(gstArgs, " "))
 
-	gstCmd := exec.CommandContext(captureCtx, "gst-launch-1.0", gstArgs...)
+	gstCmd := newGstCommand(captureCtx, gstArgs...)
 	gstStdout, err := gstCmd.StdoutPipe()
 	if err != nil {
 		if ac.eld != nil {
@@ -258,7 +258,6 @@ func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec
 		cancel()
 		return nil, fmt.Errorf("gst stdout pipe: %w", err)
 	}
-	gstStderr, _ := gstCmd.StderrPipe()
 
 	waitResult, err := startGStreamerCommand(gstCmd)
 	if err != nil {
@@ -269,7 +268,6 @@ func StartAudioCapture(ctx context.Context, source AudioSource, codec AudioCodec
 		cancel()
 		return nil, fmt.Errorf("start audio capture pipeline: %w", err)
 	}
-	go logStderr("AUDIO-GST", gstStderr)
 
 	ac.gstCmd = gstCmd
 	ac.pcmPipe = gstStdout
@@ -421,17 +419,10 @@ func (ac *AudioCapture) Stop() {
 	if ac.pcmPipe != nil {
 		ac.pcmPipe.Close()
 	}
-	if ac.gstCmd != nil && ac.gstCmd.Process != nil {
-		_ = ac.gstCmd.Process.Kill()
+	if ac.gstCmd != nil {
+		ac.gstCmd.Kill()
 	}
-	select {
-	case <-ac.waitCh:
-	case <-time.After(2 * time.Second):
-		if ac.gstCmd != nil && ac.gstCmd.Process != nil {
-			_ = ac.gstCmd.Process.Kill()
-		}
-		<-ac.waitCh
-	}
+	<-ac.waitCh
 	ac.eldMu.Lock()
 	if ac.eld != nil {
 		ac.eld.Close()

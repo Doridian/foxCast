@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -51,7 +50,7 @@ type GroupCapture struct {
 	outputs []*AudioCapture
 	queues  []chan groupChunk
 	cancel  context.CancelFunc
-	gstCmd  *exec.Cmd
+	gstCmd  *gstCommand
 	pipe    io.Closer
 	done    chan struct{}
 	running bool // fanOut was started and will close done
@@ -141,17 +140,15 @@ func (g *GroupCapture) startRecording(ctx context.Context, device string, layout
 	}
 	args := audioCapturePipelineArgsLayout(srcArgs, groupChunkSamples, layout, timestamped)
 	dbg("[AUDIO] group capture pipeline: gst-launch-1.0 %s", strings.Join(args, " "))
-	cmd := exec.CommandContext(ctx, "gst-launch-1.0", args...)
+	cmd := newGstCommand(ctx, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("gst stdout pipe: %w", err)
 	}
-	stderr, _ := cmd.StderrPipe()
 	waitResult, err := startGStreamerCommand(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("start group audio capture pipeline: %w", err)
 	}
-	go logStderr("AUDIO-GST", stderr)
 	g.gstCmd, g.pipe = cmd, stdout
 	go func() {
 		if err := <-waitResult; err != nil && ctx.Err() == nil {
@@ -176,8 +173,8 @@ func (g *GroupCapture) Stop() {
 		if g.pipe != nil {
 			g.pipe.Close()
 		}
-		if g.gstCmd != nil && g.gstCmd.Process != nil {
-			_ = g.gstCmd.Process.Kill()
+		if g.gstCmd != nil {
+			g.gstCmd.Kill()
 		}
 		if g.running {
 			<-g.done

@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -221,20 +219,6 @@ func TestMeasureVideoCaptureLatencyCancellationInterruptsRead(t *testing.T) {
 	}
 	if !capture.stopped {
 		t.Fatal("canceled measurement left its capture reader active")
-	}
-}
-
-func TestStartGStreamerCommandSetsParentDeathSignal(t *testing.T) {
-	cmd := exec.Command("true")
-	waitResult, err := startGStreamerCommand(cmd)
-	if err != nil {
-		t.Fatalf("startGStreamerCommand: %v", err)
-	}
-	if cmd.SysProcAttr == nil || cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
-		t.Fatalf("Pdeathsig = %v, want SIGKILL", cmd.SysProcAttr)
-	}
-	if err := <-waitResult; err != nil {
-		t.Fatalf("wait for supervised command: %v", err)
 	}
 }
 
@@ -685,6 +669,7 @@ func TestDetectGstEncoderSelectsExplicitOpenH264(t *testing.T) {
 		"gop-size=50",
 		"rate-control=bitrate",
 		"usage-type=screen",
+		"scene-change-detection=false",
 	}
 	if !reflect.DeepEqual(encoder.parts, wantParts) {
 		t.Fatalf("OpenH264 pipeline = %v, want %v", encoder.parts, wantParts)

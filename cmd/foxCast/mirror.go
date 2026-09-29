@@ -11,7 +11,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"git.foxden.network/FoxDen/foxCast/internal/sender"
@@ -290,27 +289,29 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 	}
 	defer videoSink.Close()
 
-	var switching sync.Mutex
-	switchSource := func(pickCtx context.Context, restore bool) error {
-		switching.Lock()
-		defer switching.Unlock()
-		return switchCaptureSource(ctx, pickCtx, preparation, broadcast, startedWidth, startedHeight, startedCodec, restore)
+	var switcher *sender.CaptureSwitcher
+	if preparation.CanSwitchSource() {
+		switcher, err = sender.NewCaptureSwitcher(ctx, preparation, capture)
+		if err != nil {
+			return fmt.Errorf("prepare screen capture: %w", err)
+		}
+		defer switcher.Close()
 	}
 	ready := func() {
 		if hooks.started != nil {
 			hooks.started()
 		}
-		if hooks.switchable != nil && preparation.CanSwitchSource() {
-			hooks.switchable(func(pickCtx context.Context) error { return switchSource(pickCtx, false) })
+		if hooks.switchable != nil && switcher != nil {
+			hooks.switchable(func(pickCtx context.Context) error { return switcher.Switch(pickCtx, false) })
 		}
 	}
-	if preparation.CanSwitchSource() {
+	if switcher != nil {
 		// The placeholder is streaming; now ask what to share.
 		go func() {
 			if hooks.status != nil {
 				hooks.status("Choosing what to share…")
 			}
-			if err := switchSource(ctx, true); err != nil {
+			if err := switcher.Switch(ctx, true); err != nil {
 				cancel(err)
 				return
 			}
@@ -327,33 +328,6 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		return fmt.Errorf("streaming: %w", err)
 	}
 	log.Println("stream ended")
-	return nil
-}
-
-// switchCaptureSource shows the portal picker (cancellable with pickCtx) and
-// moves broadcast to a new encoder for the chosen source, with the running
-// canvas and codec so the receiver sees only a new keyframe. The current
-// source fades to black first and the new one fades in. The encoder lives
-// until the session ctx ends. restore lets -remember-source skip the picker.
-func switchCaptureSource(ctx, pickCtx context.Context, preparation *sender.CapturePreparation, broadcast *sender.BroadcastCapture, width, height int, codec sender.VideoCodec, restore bool) error {
-	next, err := preparation.PrepareSource(pickCtx, restore)
-	if err != nil {
-		return fmt.Errorf("choose what to share: %w", err)
-	}
-	defer next.Close()
-	select {
-	case <-broadcast.Source().FadeOut():
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	started, err := next.StartWithContextAndCodec(ctx, width, height, codec)
-	if err != nil {
-		return fmt.Errorf("start capture: %w", err)
-	}
-	if err := broadcast.SwitchSource(started); err != nil {
-		return err
-	}
-	log.Printf("switched screen capture source")
 	return nil
 }
 

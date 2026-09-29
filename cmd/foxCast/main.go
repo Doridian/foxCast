@@ -62,7 +62,7 @@ Usage:
   foxCast group  [flags] <receiver>... Play audio on several receivers in step (stereo pair, surround)
   foxCast probe  [flags] <url|file>    Show how a file would be played (tracks, transmuxing)
   foxCast serve  [flags] <url|file>    Serve a file (as HLS if it is Matroska) without a receiver
-  foxCast gui    [flags]               System tray app (build with -tags gui)
+  foxCast gui    [flags]               System tray app
 
 Run "foxCast <command> -h" for command flags.
 `)

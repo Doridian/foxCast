@@ -33,7 +33,7 @@ const (
 var ErrCancelled = errors.New("cancelled by user")
 
 // ErrUnavailable is returned by Run when foxCast was built without the GUI.
-var ErrUnavailable = errors.New("foxCast was built without GUI support; rebuild with -tags gui (needs Qt 6 development files)")
+var ErrUnavailable = errors.New("foxCast was built with -tags nogui; rebuild without it for the tray app (needs Qt 6 development files)")
 
 // CredentialKind is what a receiver asks the user for.
 type CredentialKind int
