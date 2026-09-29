@@ -5,10 +5,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/netip"
+	"time"
 
 	"git.foxden.network/FoxDen/foxCast/internal/gui"
 	"git.foxden.network/FoxDen/foxCast/internal/sender"
 )
+
+// clockLookupTimeout bounds resolving a manually added receiver's host name
+// for its PTP report.
+const clockLookupTimeout = time.Second
 
 // cmdGUI runs the system tray front end. The mirror and transmux flags set
 // the defaults for sessions started from it.
@@ -127,6 +134,28 @@ func (b *guiBackend) Play(ctx context.Context, r *gui.Receiver, location string,
 		httpPort:  b.httpPort,
 		onStarted: cb.Started,
 	})
+}
+
+// ClockStats reports the PTP listener's view of r. r.IP is the address the
+// session connected to; a manually added host name is looked up again.
+func (b *guiBackend) ClockStats(r *gui.Receiver) (gui.ClockStats, bool) {
+	if b.opts.ptp == nil {
+		return gui.ClockStats{}, false
+	}
+	addrs := []netip.Addr{}
+	if addr, err := netip.ParseAddr(r.IP); err == nil {
+		addrs = append(addrs, addr)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), clockLookupTimeout)
+		addrs, _ = net.DefaultResolver.LookupNetIP(ctx, "ip4", r.IP)
+		cancel()
+	}
+	for _, addr := range addrs {
+		if st, ok := b.opts.ptp.Stats(addr); ok {
+			return gui.ClockStats{Locked: st.Locked, Latency: st.Latency, Jitter: st.Jitter, LastSync: st.LastSync}, true
+		}
+	}
+	return gui.ClockStats{}, false
 }
 
 // guiPrompter adapts a gui.Prompter to the connect flow.

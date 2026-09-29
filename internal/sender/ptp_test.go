@@ -252,6 +252,9 @@ func TestPTPListenerTimesDelayRequestRoundTrips(t *testing.T) {
 		trips := len(l.peers[netip.MustParseAddr("127.0.0.1")].roundTrips)
 		l.mu.Unlock()
 		if trips >= 3 {
+			if _, ok := l.Stats(netip.MustParseAddr("127.0.0.1")); !ok {
+				t.Fatal("no stats after round trips")
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -308,5 +311,25 @@ func TestMediaClockWaitForPTPTimesOut(t *testing.T) {
 	go clock.observePTP(time.Now(), time.Second, 0, false)
 	if !clock.waitForPTP(context.Background(), 2*time.Second) {
 		t.Fatal("waitForPTP missed the first sample")
+	}
+}
+
+func TestPTPPeerStats(t *testing.T) {
+	ms := time.Millisecond
+	peer := &ptpPeer{roundTrips: []time.Duration{4 * ms, 6 * ms, 5 * ms, 9 * ms}, samples: ptpSettleSyncs}
+	st := peer.stats()
+	if !st.Locked {
+		t.Error("peer with enough samples and round trips is not locked")
+	}
+	if st.Latency != 6*ms {
+		t.Errorf("latency = %v, want the median 6ms", st.Latency)
+	}
+	// |6-4| + |5-6| + |9-5| = 7ms over 3 changes.
+	if want := 7 * ms / 3; st.Jitter != want {
+		t.Errorf("jitter = %v, want %v", st.Jitter, want)
+	}
+	peer.samples = 1
+	if peer.stats().Locked {
+		t.Error("unsettled peer is locked")
 	}
 }

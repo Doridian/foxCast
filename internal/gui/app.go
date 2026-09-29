@@ -24,6 +24,9 @@ const (
 	// shutdownTimeout bounds how long quitting waits for sessions to stop
 	// (receiver teardown, virtual audio device removal).
 	shutdownTimeout = 10 * time.Second
+	// clockStatsInterval is how often the PTP line of connected receivers
+	// is refreshed while the popup is shown.
+	clockStatsInterval = time.Second
 
 	iconApp     = "video-television"
 	iconActive  = "media-playback-playing"
@@ -62,9 +65,11 @@ type session struct {
 	// mirror; switching is true while its picker is open.
 	switchSource func(context.Context) error
 	switching    bool
-	ctx          context.Context
-	cancel       context.CancelFunc
-	done         chan struct{}
+	// clock is the latest PTP report, nil when the session has none.
+	clock  *ClockStats
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // describe is the session's state as shown next to its receiver.
@@ -99,6 +104,8 @@ type app struct {
 	discovering  bool
 	discoveryErr error
 	lastDir      string
+	// clockPolling is set while a ClockStats round is running.
+	clockPolling bool
 
 	bus         *sessionBus
 	tray        *trayItem
@@ -159,6 +166,9 @@ func Run(ctx context.Context, backend Backend) error {
 	a.update()
 
 	go a.discoverLoop()
+	clockTimer := qt.NewQTimer()
+	clockTimer.OnTimeout(a.pollClockStats)
+	clockTimer.Start(int(clockStatsInterval / time.Millisecond))
 	go func() {
 		<-ctx.Done()
 		mainthread.Start(qt.QCoreApplication_Quit)
@@ -221,6 +231,40 @@ func (a *app) discoverLoop() {
 			a.update()
 		})
 	}
+}
+
+// pollClockStats fetches the PTP reports of running sessions while the popup
+// is shown, updating their rows in place.
+func (a *app) pollClockStats() {
+	if a.clockPolling || !a.popup.w.IsVisible() {
+		return
+	}
+	var running []*session
+	for _, s := range a.sessions {
+		if s.started && !s.stopping {
+			running = append(running, s)
+		}
+	}
+	if len(running) == 0 {
+		return
+	}
+	a.clockPolling = true
+	go func() {
+		reports := make([]*ClockStats, len(running))
+		for i, s := range running {
+			if st, ok := a.backend.ClockStats(&s.receiver); ok {
+				reports[i] = &st
+			}
+		}
+		mainthread.Start(func() {
+			a.clockPolling = false
+			now := time.Now()
+			for i, s := range running {
+				s.clock = reports[i]
+				a.popup.showClock(s, now)
+			}
+		})
+	}()
 }
 
 // requestRefresh starts a discovery round now (or right after the current

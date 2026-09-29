@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 )
@@ -86,6 +87,8 @@ const (
 	ptpPendingLimit = 16
 	// ptpLogEvery thins the per-Sync debug log.
 	ptpLogEvery = 32
+	// ptpStatsWindow is how many of the latest round trips PTPStats covers.
+	ptpStatsWindow = 16
 )
 
 // PTPListener follows the PTP clocks of receivers in PTP sessions over UDP
@@ -180,6 +183,31 @@ func (l *PTPListener) follow(ctx context.Context, addr netip.Addr, clock *mediaC
 		}
 		l.mu.Unlock()
 	}()
+}
+
+// PTPStats describes how well a followed receiver's clock is being tracked.
+type PTPStats struct {
+	// Locked is set once PTP, rather than the RTSP clock headers, times the
+	// session.
+	Locked bool
+	// Latency is the median of the latest Delay_Req round trips.
+	Latency time.Duration
+	// Jitter is the mean change between consecutive round trips of those.
+	Jitter time.Duration
+	// LastSync is when the latest Sync arrived; zero before the first.
+	LastSync time.Time
+}
+
+// Stats reports on the receiver at addr. ok is false while it is not
+// followed or no round trip has completed yet.
+func (l *PTPListener) Stats(addr netip.Addr) (stats PTPStats, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	peer := l.peers[addr.Unmap()]
+	if peer == nil || len(peer.roundTrips) == 0 {
+		return PTPStats{}, false
+	}
+	return peer.stats(), true
 }
 
 func (l *PTPListener) readLoop(conn *net.UDPConn) {
@@ -280,6 +308,7 @@ type ptpPeer struct {
 	roundTrips        []time.Duration
 	grandmaster       uint64
 	samples           int
+	lastSync          time.Time
 }
 
 // ptpPendingSync is half of a two-step Sync: the Sync's arrival or its
@@ -306,7 +335,8 @@ func (p *ptpPeer) pairSync(seq uint16, half ptpPendingSync) {
 	}
 	local, remote, rate, rated := p.estimator.add(arrival, origin)
 	p.samples++
-	if p.samples < ptpSettleSyncs || len(p.roundTrips) < ptpSettleRoundTrips {
+	p.lastSync = arrival
+	if !p.settled() {
 		// Until then the receiver's clock headers keep timing the session.
 		return
 	}
@@ -316,6 +346,31 @@ func (p *ptpPeer) pairSync(seq uint16, half ptpPendingSync) {
 		// The offset from wall time compares receivers of one group.
 		dbg("[PTP] %s sync sample %d: one-way=%v rate=%+.1fppm correction=%v wall-offset=%v",
 			p.addr, p.samples, oneWay, rate*1e6, correction, remote+oneWay-time.Duration(local.UnixNano()))
+	}
+}
+
+// settled reports whether PTP samples time the session yet.
+func (p *ptpPeer) settled() bool {
+	return p.samples >= ptpSettleSyncs && len(p.roundTrips) >= ptpSettleRoundTrips
+}
+
+func (p *ptpPeer) stats() PTPStats {
+	recent := p.roundTrips[max(0, len(p.roundTrips)-ptpStatsWindow):]
+	var jitter time.Duration
+	for i := 1; i < len(recent); i++ {
+		d := recent[i] - recent[i-1]
+		jitter += max(d, -d)
+	}
+	if len(recent) > 1 {
+		jitter /= time.Duration(len(recent) - 1)
+	}
+	sorted := slices.Clone(recent)
+	slices.Sort(sorted)
+	return PTPStats{
+		Locked:   p.settled(),
+		Latency:  sorted[len(sorted)/2],
+		Jitter:   jitter,
+		LastSync: p.lastSync,
 	}
 }
 

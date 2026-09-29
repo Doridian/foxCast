@@ -38,6 +38,17 @@ type popup struct {
 	scroll  *qt.QScrollArea
 	list    *qt.QVBoxLayout
 
+	// clocks are the PTP lines of the listed sessions, by receiver key.
+	clocks map[string]*qt.QLabel
+	// rows are the listed receivers' rows, by receiver key.
+	rows map[string]*qt.QWidget
+	// anchorKey's row is kept anchorOffset pixels below the top of the
+	// view across rebuilds; settle reapplies that once Qt has laid out
+	// the new rows.
+	anchorKey    string
+	anchorOffset int
+	settle       *qt.QTimer
+
 	expanded    string
 	hiddenAt    time.Time
 	lastX       int32
@@ -122,6 +133,9 @@ func newPopup(a *app, anchored bool) *popup {
 	scroll.SetWidget(content)
 	layout.AddWidget2(scroll.QWidget, 1)
 	p.scroll = scroll
+	p.settle = qt.NewQTimer2(p.w.QObject)
+	p.settle.SetSingleShot(true)
+	p.settle.OnTimeout(p.scrollToAnchor)
 
 	p.w.OnKeyPressEvent(func(super func(*qt.QKeyEvent), event *qt.QKeyEvent) {
 		if p.anchored && event.Key() == int(qt.Key_Escape) {
@@ -230,7 +244,7 @@ func (p *popup) update() {
 	a := p.app
 	all := a.receivers.receivers()
 	query := p.search.Text()
-	known, other := groupReceivers(all, a.isPaired, func(r *Receiver) bool { return a.session(r) != nil }, query)
+	active, known, other := groupReceivers(all, a.isPaired, func(r *Receiver) bool { return a.session(r) != nil }, query)
 
 	switch {
 	case a.discoveryErr != nil && len(all) == 0:
@@ -244,6 +258,7 @@ func (p *popup) update() {
 	}
 	p.refresh.SetEnabled(!a.discovering)
 
+	p.pickAnchor()
 	// Old rows are deleted later: this may run from one of their buttons.
 	for p.list.Count() > 0 {
 		item := p.list.TakeAt(0)
@@ -253,18 +268,25 @@ func (p *popup) update() {
 		}
 	}
 
-	if len(known) > 0 {
-		p.addSection("Paired")
-		for _, r := range known {
-			p.addRow(r, true)
+	p.clocks = map[string]*qt.QLabel{}
+	p.rows = map[string]*qt.QWidget{}
+	for _, section := range []struct {
+		title     string
+		receivers []Receiver
+	}{
+		{"Connected", active},
+		{"Paired", known},
+		{"Available", other},
+	} {
+		if len(section.receivers) == 0 {
+			continue
 		}
-	}
-	if len(other) > 0 {
-		if len(known) > 0 {
-			p.addSection("Available")
+		// A list of only unpaired receivers needs no heading.
+		if len(section.receivers) != len(active)+len(known)+len(other) || section.title != "Available" {
+			p.addSection(section.title)
 		}
-		for _, r := range other {
-			p.addRow(r, false)
+		for _, r := range section.receivers {
+			p.addRow(r, a.isPaired(&r))
 		}
 	}
 	switch {
@@ -275,10 +297,62 @@ func (p *popup) update() {
 			text = "<p><b>Searching for AirPlay receivers…</b></p>"
 		}
 		p.addPlaceholder(text)
-	case len(known)+len(other) == 0:
+	case len(active)+len(known)+len(other) == 0:
 		p.addPlaceholder("<p>No receivers match “" + html.EscapeString(strings.TrimSpace(query)) + "”.</p>")
 	}
 	p.list.AddStretch()
+	p.keepAnchor()
+}
+
+// pickAnchor chooses the row to hold still while the listing is rebuilt, so
+// rows moving between sections (a receiver connecting or disconnecting) do
+// not shift what is on screen: the row under the mouse, else the expanded
+// one, else the topmost one in view.
+func (p *popup) pickAnchor() {
+	p.anchorKey = ""
+	if !p.w.IsVisible() {
+		return
+	}
+	top := p.scroll.VerticalScrollBar().Value()
+	anchor := ""
+	for key, row := range p.rows {
+		if row.UnderMouse() {
+			anchor = key
+		}
+	}
+	if anchor == "" && p.rows[p.expanded] != nil {
+		anchor = p.expanded
+	}
+	if anchor == "" {
+		for key, row := range p.rows {
+			if row.Y()+row.Height() > top && (anchor == "" || row.Y() < p.rows[anchor].Y()) {
+				anchor = key
+			}
+		}
+	}
+	if anchor != "" {
+		p.anchorKey, p.anchorOffset = anchor, p.rows[anchor].Y()-top
+	}
+}
+
+// keepAnchor scrolls the rebuilt listing back to the anchor row: at once, by
+// laying the rows out now, and again after Qt's own layout pass.
+func (p *popup) keepAnchor() {
+	if p.anchorKey == "" {
+		return
+	}
+	content := p.scroll.Widget()
+	viewport := p.scroll.Viewport()
+	p.list.Activate()
+	content.Resize(viewport.Width(), max(viewport.Height(), content.MinimumSizeHint().Height()))
+	p.scrollToAnchor()
+	p.settle.Start(0)
+}
+
+func (p *popup) scrollToAnchor() {
+	if row := p.rows[p.anchorKey]; row != nil {
+		p.scroll.VerticalScrollBar().SetValue(row.Y() - p.anchorOffset)
+	}
 }
 
 // add appends w to the listing. Widgets added to a shown parent are only
@@ -356,6 +430,17 @@ func (p *popup) addRow(r Receiver, paired bool) {
 	state := qt.NewQLabel3(rowState(&r, s, paired))
 	state.SetEnabled(false)
 	texts.AddWidget(state.QWidget)
+	if s != nil {
+		clock := qt.NewQLabel2()
+		font := qt.NewQFont5(clock.Font())
+		font.SetPointSizeF(font.PointSizeF() * 0.85)
+		clock.SetFont(font)
+		clock.SetEnabled(false)
+		clock.SetToolTip("Clock synchronization with " + r.Name + ": round-trip latency and its jitter")
+		texts.AddWidget(clock.QWidget)
+		p.clocks[key] = clock
+		p.setClock(clock, s, time.Now())
+	}
 	top.AddLayout2(texts.QLayout, 1)
 
 	switch {
@@ -398,7 +483,27 @@ func (p *popup) addRow(r Receiver, paired bool) {
 		}
 		p.update()
 	})
+	p.rows[key] = row.QWidget
 	p.add(row.QWidget)
+}
+
+// showClock refreshes the PTP line of s's row, if it is listed.
+func (p *popup) showClock(s *session, now time.Time) {
+	if clock := p.clocks[s.receiver.Key()]; clock != nil {
+		p.setClock(clock, s, now)
+	}
+}
+
+// setClock shows s's PTP report in label, or hides it without one.
+func (p *popup) setClock(label *qt.QLabel, s *session, now time.Time) {
+	if s.clock == nil || !s.started || s.stopping {
+		label.SetVisible(false)
+		return
+	}
+	if text := clockStatsText(*s.clock, now); label.Text() != text {
+		label.SetText(text)
+	}
+	label.SetVisible(true)
 }
 
 // details is the expanded part of r's row.

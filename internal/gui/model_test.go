@@ -178,17 +178,37 @@ func TestGroupReceivers(t *testing.T) {
 	paired := func(r *Receiver) bool { return r.DeviceID == "3" || r.DeviceID == "4" }
 	inUse := func(r *Receiver) bool { return r.DeviceID == "4" }
 
-	known, other := groupReceivers(rs, paired, inUse, "")
-	if names(known) != "Living Room TV,Kitchen" {
-		t.Errorf("known = %s (receivers in use belong first)", names(known))
+	active, known, other := groupReceivers(rs, paired, inUse, "")
+	if names(active) != "Living Room TV" {
+		t.Errorf("active = %s", names(active))
+	}
+	if names(known) != "Kitchen" {
+		t.Errorf("known = %s (receivers in use are listed apart)", names(known))
 	}
 	if names(other) != "Bedroom HomePod,Den TV,Car" {
 		t.Errorf("other = %s (unusable receivers belong last)", names(other))
 	}
 
-	known, other = groupReceivers(rs, paired, inUse, " appletv ")
-	if len(known) != 0 || names(other) != "Den TV" {
-		t.Errorf("query by model: known = %s, other = %s", names(known), names(other))
+	active, known, other = groupReceivers(rs, paired, inUse, " appletv ")
+	if len(active)+len(known) != 0 || names(other) != "Den TV" {
+		t.Errorf("query by model: active = %s, known = %s, other = %s", names(active), names(known), names(other))
+	}
+}
+
+func TestClockStatsText(t *testing.T) {
+	now := time.Unix(1000, 0)
+	for _, tc := range []struct {
+		stats ClockStats
+		want  string
+	}{
+		{ClockStats{Latency: 5 * time.Millisecond}, "PTP · synchronizing…"},
+		{ClockStats{Locked: true, Latency: 4200 * time.Microsecond, Jitter: 830 * time.Microsecond, LastSync: now.Add(-time.Second)},
+			"PTP · 4.2 ms latency · 0.8 ms jitter"},
+		{ClockStats{Locked: true, LastSync: now.Add(-10 * time.Second)}, "PTP · no sync from receiver"},
+	} {
+		if got := clockStatsText(tc.stats, now); got != tc.want {
+			t.Errorf("clockStatsText(%+v) = %q; want %q", tc.stats, got, tc.want)
+		}
 	}
 }
 

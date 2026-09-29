@@ -27,6 +27,9 @@ const (
 	// receiverExpiry is how long a receiver stays listed after it stops
 	// answering discovery; mDNS responses are occasionally missed.
 	receiverExpiry = 90 * time.Second
+	// clockStaleAfter is how long without a PTP Sync before the clock is
+	// shown as lost.
+	clockStaleAfter = 3 * time.Second
 )
 
 // ErrCancelled is returned by a Prompter when the user dismisses a prompt.
@@ -103,6 +106,35 @@ type Callbacks struct {
 	SourceSwitchable func(switchSource func(context.Context) error)
 }
 
+// ClockStats describes the PTP timing of a session.
+type ClockStats struct {
+	// Locked is set once PTP times the session.
+	Locked bool
+	// Latency is the typical round trip to the receiver.
+	Latency time.Duration
+	// Jitter is how much the round trip varies.
+	Jitter time.Duration
+	// LastSync is when the receiver's clock was last heard.
+	LastSync time.Time
+}
+
+// clockStatsText is the short PTP line shown under a connected receiver.
+func clockStatsText(st ClockStats, now time.Time) string {
+	switch {
+	case !st.Locked:
+		return "PTP · synchronizing…"
+	case now.Sub(st.LastSync) > clockStaleAfter:
+		return "PTP · no sync from receiver"
+	default:
+		return fmt.Sprintf("PTP · %s latency · %s jitter", milliseconds(st.Latency), milliseconds(st.Jitter))
+	}
+}
+
+// milliseconds formats d like "4.2 ms".
+func milliseconds(d time.Duration) string {
+	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 1, 64) + " ms"
+}
+
 // Backend performs the receiver work the GUI triggers. Mirror and Play block
 // until the session ends; cancelling ctx stops the session and is not an
 // error.
@@ -116,6 +148,9 @@ type Backend interface {
 	// StreamAudio sends the computer's sound, and no video, to r.
 	StreamAudio(ctx context.Context, r *Receiver, prompt Prompter, cb Callbacks) error
 	Play(ctx context.Context, r *Receiver, location string, prompt Prompter, cb Callbacks) error
+	// ClockStats reports on the PTP clock of r's running session; ok is false
+	// when the session is not timed with PTP (or not yet).
+	ClockStats(r *Receiver) (stats ClockStats, ok bool)
 }
 
 // receiverList merges discovery rounds, keeping receivers for a while after
@@ -196,12 +231,12 @@ func (l *receiverList) deviceIDs() []string {
 	return ids
 }
 
-// groupReceivers splits rs (already sorted) for display, like known and
-// available networks: receivers that are in use or paired first (in use at
-// the very top, like a connected network), then the rest, with ones foxCast
-// cannot use last. Only receivers matching query are kept.
-func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query string) (known, other []Receiver) {
-	var active, unusable []Receiver
+// groupReceivers splits rs (already sorted) for display, like connected,
+// known and available networks: receivers that are in use, then paired
+// ones, then the rest, with ones foxCast cannot use last. Only receivers
+// matching query are kept.
+func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query string) (active, known, other []Receiver) {
+	var unusable []Receiver
 	for i := range rs {
 		r := &rs[i]
 		switch {
@@ -216,7 +251,7 @@ func groupReceivers(rs []Receiver, paired, inUse func(*Receiver) bool, query str
 			unusable = append(unusable, *r)
 		}
 	}
-	return append(active, known...), append(other, unusable...)
+	return active, known, append(other, unusable...)
 }
 
 // matchesQuery reports whether r's name, model or address contains query,
