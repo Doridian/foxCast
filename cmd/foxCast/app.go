@@ -178,8 +178,10 @@ func companionReceiver(ctx context.Context, o *connectOptions) (appReceiver, err
 // credentials, or after PIN pairing (whose credentials it saves).
 func companionConnect(ctx context.Context, o *connectOptions, store *sender.CredentialStore, addr string, r appReceiver) (*sender.CompanionClient, *sender.CompanionCredentials, error) {
 	var saved *sender.CompanionCredentials
-	if !o.forcePair {
-		if creds := store.Lookup(r.deviceID); creds != nil {
+	var password string
+	if creds := store.Lookup(r.deviceID); creds != nil {
+		password = creds.Password
+		if !o.forcePair {
 			saved = creds.Companion
 		}
 	}
@@ -200,7 +202,7 @@ func companionConnect(ctx context.Context, o *connectOptions, store *sender.Cred
 		log.Printf("Companion pair-verify with saved credentials failed: %v", err)
 	}
 
-	creds, err := companionPair(ctx, o, addr, r.name)
+	creds, err := companionPair(ctx, o, addr, r.name, password)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -222,9 +224,35 @@ func companionConnect(ctx context.Context, o *connectOptions, store *sender.Cred
 	return client, creds, nil
 }
 
-// companionPair runs PIN pair-setup: the Apple TV shows a PIN for the user
-// to enter.
-func companionPair(ctx context.Context, o *connectOptions, addr, receiver string) (*sender.CompanionCredentials, error) {
+// companionPair runs pair-setup. An Apple TV with "Require Password" set
+// takes its AirPlay password and shows no PIN, so a saved password is tried
+// first; otherwise the user enters the PIN on screen or the password.
+func companionPair(ctx context.Context, o *connectOptions, addr, receiver, password string) (*sender.CompanionCredentials, error) {
+	if password != "" {
+		creds, err := companionPairWith(ctx, addr, func() (string, error) { return password, nil })
+		if !errors.Is(err, sender.ErrPairingAuthentication) {
+			if err != nil {
+				return nil, fmt.Errorf("Companion pairing: %w", err)
+			}
+			return creds, nil
+		}
+		log.Printf("Companion pairing: the Apple TV rejected the saved AirPlay password")
+	}
+	creds, err := companionPairWith(ctx, addr, func() (string, error) {
+		return o.askCredential(ctx, receiver, credentialPINOrPassword, "PIN or password")
+	})
+	if errors.Is(err, sender.ErrPairingAuthentication) {
+		return nil, errors.New("Companion pairing: the Apple TV rejected the PIN or password")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("Companion pairing: %w", err)
+	}
+	return creds, nil
+}
+
+// companionPairWith runs one pair-setup on a new connection, with the code
+// code returns once the Apple TV has started pairing.
+func companionPairWith(ctx context.Context, addr string, code func() (string, error)) (*sender.CompanionCredentials, error) {
 	client, err := sender.DialCompanion(ctx, addr)
 	if err != nil {
 		return nil, err
@@ -232,18 +260,11 @@ func companionPair(ctx context.Context, o *connectOptions, addr, receiver string
 	defer client.Close()
 	pairing, err := client.BeginPairing(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Companion pairing: %w", err)
+		return nil, err
 	}
-	pin, err := o.askCredential(ctx, receiver, credentialPIN, "PIN")
+	secret, err := code()
 	if err != nil {
 		return nil, err
 	}
-	creds, err := pairing.Finish(ctx, pin, companionClientName)
-	if errors.Is(err, sender.ErrPairingAuthentication) {
-		return nil, errors.New("Companion pairing: the Apple TV rejected the PIN")
-	}
-	if err != nil {
-		return nil, fmt.Errorf("Companion pairing: %w", err)
-	}
-	return creds, nil
+	return pairing.Finish(ctx, secret, companionClientName)
 }

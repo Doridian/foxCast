@@ -24,6 +24,9 @@ DNS-SD service `_companion-link._tcp`, on a dynamic port (often 49152+). It
 is a separate service from `_airplay._tcp`; foxCast matches the two by IP
 address. TXT keys used:
 
+Real devices send mixed-case keys (`rpFl`, `rpMd`); pyatv lowercases them, as
+does foxCast.
+
 | Key | Meaning |
 |-----|---------|
 | `rpmd` | Model, e.g. `AppleTV11,1` |
@@ -108,6 +111,14 @@ message in the `_pd` field of an OPACK dictionary instead of an HTTP body.
 | PS_Next ← | `{_pd: TLV(State=4, Proof)}` |
 | PS_Next | `{_pd: TLV(State=5, EncryptedData), _pwTy: 1, _x}` |
 | PS_Next ← | `{_pd: TLV(State=6, EncryptedData)}` |
+
+**With "Require Password" set** (Settings → AirPlay and HomeKit), the Apple
+TV shows no PIN: the SRP password is the AirPlay password instead, with the
+same `_pwTy: 1` and no other difference on the wire. Observed on an Apple TV
+4K (AppleTV11,1, rpVr 715.2) in September 2026: pyatv 0.18 got no PIN either
+and the Apple TV closed the connection about 30 s after M2; pairing with the
+AirPlay password succeeded. foxCast therefore tries a saved AirPlay password
+first and otherwise asks for "PIN or password".
 
 SRP-6a with the 3072-bit group, SHA-512 and username `Pair-Setup`, as for
 AirPlay. The M5 sub-TLV carries Identifier, PublicKey and Signature plus

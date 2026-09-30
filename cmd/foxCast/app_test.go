@@ -95,8 +95,8 @@ func TestOpenInAppPairsOnceThenReusesCredentials(t *testing.T) {
 	if err := openInApp(ctx, opts, first, nil); err != nil {
 		t.Fatalf("first openInApp: %v", err)
 	}
-	if !reflect.DeepEqual(prompter.kinds, []credentialKind{credentialPIN}) {
-		t.Fatalf("prompts = %v, want one PIN prompt", prompter.kinds)
+	if !reflect.DeepEqual(prompter.kinds, []credentialKind{credentialPINOrPassword}) {
+		t.Fatalf("prompts = %v, want one PIN-or-password prompt", prompter.kinds)
 	}
 
 	second := applink.Link{App: "Apple TV", URL: "https://tv.apple.com/us/movie/spirited/umc.cmc.3lp7wqowerzdbej98tveildi3"}
@@ -119,5 +119,72 @@ func TestOpenInAppPairsOnceThenReusesCredentials(t *testing.T) {
 	opts.forcePair = false
 	if err := openInApp(ctx, opts, first, nil); err != nil {
 		t.Fatalf("openInApp after failed re-pairing: %v", err)
+	}
+}
+
+// An Apple TV with "Require Password" pairs with its AirPlay password and
+// shows no PIN: a saved password pairs without asking, and a wrong one falls
+// back to asking.
+func TestOpenInAppPairsWithSavedPassword(t *testing.T) {
+	const testDeviceID = "AA:BB:CC:DD:EE:FF"
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	airplay, err := sender.NewReceiverServer(sender.ReceiverConfig{
+		ListenAddress: "127.0.0.1:0",
+		Profile:       sender.ReceiverProfileModern,
+		Name:          "Test Apple TV",
+		DeviceID:      testDeviceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	companion, err := sender.NewCompanionReceiver(sender.CompanionReceiverConfig{PIN: "s3cret pw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveCtx, stopServing := context.WithCancel(ctx)
+	done := make(chan struct{}, 2)
+	go func() { _ = airplay.Serve(serveCtx); done <- struct{}{} }()
+	go func() { _ = companion.Serve(serveCtx); done <- struct{}{} }()
+	defer func() {
+		stopServing()
+		<-done
+		<-done
+	}()
+
+	store, err := sender.NewCredentialStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePassword(testDeviceID, "s3cret pw"); err != nil {
+		t.Fatal(err)
+	}
+	prompter := &countingPrompter{pin: "s3cret pw"}
+	opts := &connectOptions{
+		target:        "127.0.0.1",
+		port:          airplay.Addr().(*net.TCPAddr).Port,
+		companionPort: companion.Addr().(*net.TCPAddr).Port,
+		store:         store,
+		prompter:      prompter,
+	}
+
+	link := applink.Link{App: "YouTube", URL: "youtube://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+	if err := openInApp(ctx, opts, link, nil); err != nil {
+		t.Fatalf("openInApp with saved password: %v", err)
+	}
+	if len(prompter.kinds) != 0 {
+		t.Fatalf("prompted despite a saved password: %v", prompter.kinds)
+	}
+
+	if err := store.SavePassword(testDeviceID, "stale"); err != nil {
+		t.Fatal(err)
+	}
+	opts.forcePair = true
+	if err := openInApp(ctx, opts, link, nil); err != nil {
+		t.Fatalf("openInApp with a stale saved password: %v", err)
+	}
+	if !reflect.DeepEqual(prompter.kinds, []credentialKind{credentialPINOrPassword}) {
+		t.Fatalf("prompts = %v, want one PIN-or-password prompt", prompter.kinds)
 	}
 }
