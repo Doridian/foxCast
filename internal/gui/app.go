@@ -108,6 +108,8 @@ type app struct {
 	lastDir      string
 	// clockPolling is set while a ClockStats round is running.
 	clockPolling bool
+	// quitting is set once quit asked the event loop to stop.
+	quitting bool
 
 	bus         *sessionBus
 	tray        *trayItem
@@ -125,7 +127,12 @@ func Run(ctx context.Context, backend Backend) error {
 	qt.QCoreApplication_SetApplicationName("foxCast")
 	qt.QGuiApplication_SetApplicationDisplayName("foxCast")
 	qt.QGuiApplication_SetDesktopFileName(desktopEntry)
+	// foxCast lives in the tray: closing a dialog must never end it. Qt 6
+	// also quits automatically when the last QEventLoopLocker goes away
+	// (file dialogs, portals and nested exec loops take them), so both
+	// automatic quits are off and only quit ends the event loop.
 	qt.QGuiApplication_SetQuitOnLastWindowClosed(false)
+	qt.QCoreApplication_SetQuitLockEnabled(false)
 	qt.QGuiApplication_SetWindowIcon(qt.QIcon_FromTheme(iconApp))
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -173,9 +180,15 @@ func Run(ctx context.Context, backend Backend) error {
 	clockTimer.Start(int(clockStatsInterval / time.Millisecond))
 	go func() {
 		<-ctx.Done()
-		mainthread.Start(qt.QCoreApplication_Quit)
+		mainthread.Start(a.quit)
 	}()
-	qt.QApplication_Exec()
+	for {
+		qt.QApplication_Exec()
+		if a.quitting {
+			break
+		}
+		log.Println("warning: Qt stopped the event loop on its own; resuming")
+	}
 
 	// The event loop has stopped, so session callbacks posted from here on
 	// never run; sessions only need their contexts cancelled.
@@ -198,8 +211,10 @@ func isDir(p string) bool {
 	return err == nil && info.IsDir()
 }
 
-// quit ends the application.
+// quit ends the application. The event loop only stops for good through
+// here; see Run.
 func (a *app) quit() {
+	a.quitting = true
 	qt.QCoreApplication_Quit()
 }
 
