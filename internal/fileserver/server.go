@@ -88,7 +88,7 @@ func outboundIP(addr string) (string, error) {
 	if err != nil {
 		host = addr
 	}
-	conn, err := net.Dial("udp", host+":80")
+	conn, err := net.Dial("udp", net.JoinHostPort(host, "80"))
 	if err != nil {
 		return "", err
 	}

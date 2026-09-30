@@ -1009,8 +1009,8 @@ func (c *AirPlayClient) readPlaintextHTTPResponse() ([]byte, map[string]string, 
 	}
 
 	body := make([]byte, contentLength)
-	if _, err := io.ReadFull(c.conn, body); err != nil {
-		return nil, headers, fmt.Errorf("read body (%d/%d bytes): %w", 0, contentLength, err)
+	if n, err := io.ReadFull(c.conn, body); err != nil {
+		return nil, headers, fmt.Errorf("read body (%d/%d bytes): %w", n, contentLength, err)
 	}
 
 	dbg("[READ] plaintext body: %d bytes", len(body))
@@ -1174,7 +1174,7 @@ func (c *AirPlayClient) readEncryptedFrame() ([]byte, error) {
 		peek := make([]byte, 32)
 		n, _ := c.conn.Read(peek)
 		dbg("[ENC-FRAME] next %d bytes on wire: %s", n, hex.EncodeToString(peek[:n]))
-		return nil, fmt.Errorf("suspicious frame length %d (expected 1-1024)", plaintextLen)
+		return nil, fmt.Errorf("suspicious frame length %d (expected 1-16384)", plaintextLen)
 	}
 
 	// Read ciphertext (plaintext length + 16-byte Poly1305 tag)
