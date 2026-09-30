@@ -41,6 +41,10 @@ type PairKeys struct {
 	SharedSecret   []byte
 	WriteKey       []byte
 	ReadKey        []byte
+	// AccessoryPublic is the receiver's long-term Ed25519 key from pair-setup
+	// M6. HAP pair-verify checks the receiver's signature against it; it is
+	// nil for transient pairings and credentials saved before it was kept.
+	AccessoryPublic ed25519.PublicKey
 	// MixFairPlayKey records the transformation negotiated by pair-verify.
 	// HAP always mixes its shared secret. The raw protocol requests the same
 	// transformation with X-Apple-PD unless the receiver advertises feature 27,
@@ -591,8 +595,17 @@ func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, sal
 	if errTLV, ok := m6[tlvError]; ok {
 		return fmt.Errorf("pair-setup M6 error: %d", errTLV[0])
 	}
-
 	c.PairKeys.SharedSecret = srp.key
+	if pin == "" && len(m6[tlvEncryptedData]) == 0 {
+		// doubletake's empty-code transient flow proves nothing about the
+		// receiver, and its keys are never saved.
+		return nil
+	}
+	_, accessoryKey, err := srp.accessoryIdentity(m6)
+	if err != nil {
+		return err
+	}
+	c.PairKeys.AccessoryPublic = accessoryKey
 	return nil
 }
 
@@ -801,7 +814,7 @@ func (c *AirPlayClient) hapPairVerify(ctx context.Context) error {
 	}
 
 	// V3: Send our encrypted proof
-	v3, err := verify.v3(tlv8Decode(v2Bytes), []byte(c.PairingID), c.PairKeys.Ed25519Private, nil)
+	v3, err := verify.v3(tlv8Decode(v2Bytes), []byte(c.PairingID), c.PairKeys.Ed25519Private, c.PairKeys.AccessoryPublic)
 	if err != nil {
 		return err
 	}

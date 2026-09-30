@@ -17,6 +17,10 @@ type SavedCredentials struct {
 	Ed25519Public   []byte          `json:"ed25519_public"`
 	Ed25519Seed     []byte          `json:"ed25519_seed"` // 32-byte seed (private key is derived from this)
 	PairingProtocol PairingProtocol `json:"pairing_protocol,omitempty"`
+	// ReceiverPublic is the receiver's long-term Ed25519 key from HAP
+	// pair-setup, checked on every later pair-verify. Entries saved before it
+	// was kept have none and are verified by decryption only.
+	ReceiverPublic []byte `json:"receiver_public,omitempty"`
 	// Password is the receiver's configured playback password ("Require
 	// Password"), used for HTTP Digest and password-keyed transient pairing.
 	// One-time on-screen PINs are never stored.
@@ -97,6 +101,9 @@ func (c *AirPlayClient) RestorePairingCredentials(saved *SavedCredentials) error
 		Ed25519Public:  append(ed25519.PublicKey(nil), pub...),
 		Ed25519Private: append(ed25519.PrivateKey(nil), priv...),
 	}
+	if len(saved.ReceiverPublic) == ed25519.PublicKeySize {
+		c.PairKeys.AccessoryPublic = append(ed25519.PublicKey(nil), saved.ReceiverPublic...)
+	}
 	return nil
 }
 
@@ -153,19 +160,20 @@ func (cs *CredentialStore) Len() int {
 
 // Save stores credentials for a device.
 func (cs *CredentialStore) Save(deviceID string, pairingID string, pub ed25519.PublicKey, priv ed25519.PrivateKey) error {
-	return cs.savePairing(deviceID, pairingID, pub, priv, PairingProtocolUnknown)
+	return cs.savePairing(deviceID, pairingID, pub, priv, nil, PairingProtocolUnknown)
 }
 
 // SavePairing stores credentials together with the protocol which actually
-// completed. New production call sites should use this instead of Save.
-func (cs *CredentialStore) SavePairing(deviceID string, pairingID string, pub ed25519.PublicKey, priv ed25519.PrivateKey, protocol PairingProtocol) error {
+// completed and the receiver's long-term key (nil when unknown). New
+// production call sites should use this instead of Save.
+func (cs *CredentialStore) SavePairing(deviceID string, pairingID string, pub ed25519.PublicKey, priv ed25519.PrivateKey, receiverPub ed25519.PublicKey, protocol PairingProtocol) error {
 	if protocol != PairingProtocolHAP && protocol != PairingProtocolRaw {
 		return fmt.Errorf("cannot save unknown pairing protocol %q", protocol)
 	}
-	return cs.savePairing(deviceID, pairingID, pub, priv, protocol)
+	return cs.savePairing(deviceID, pairingID, pub, priv, receiverPub, protocol)
 }
 
-func (cs *CredentialStore) savePairing(deviceID string, pairingID string, pub ed25519.PublicKey, priv ed25519.PrivateKey, protocol PairingProtocol) error {
+func (cs *CredentialStore) savePairing(deviceID string, pairingID string, pub ed25519.PublicKey, priv ed25519.PrivateKey, receiverPub ed25519.PublicKey, protocol PairingProtocol) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -179,6 +187,7 @@ func (cs *CredentialStore) savePairing(deviceID string, pairingID string, pub ed
 	creds.PairingID = pairingID
 	creds.Ed25519Public = append([]byte(nil), pub...)
 	creds.Ed25519Seed = append([]byte(nil), priv.Seed()...)
+	creds.ReceiverPublic = append([]byte(nil), receiverPub...)
 	if protocol != PairingProtocolUnknown {
 		creds.PairingProtocol = protocol
 	}

@@ -3,6 +3,7 @@ package sender
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha512"
 	"errors"
 	"fmt"
@@ -983,6 +984,62 @@ func TestReceiverServerPINAndDigestModes(t *testing.T) {
 		stats := server.Stats()
 		if stats.PINStarts != 1 || stats.PairSetup != 3 || stats.PairVerify != 2 {
 			t.Fatalf("PIN stats = %+v", stats)
+		}
+	})
+
+	t.Run("saved PIN pairing verifies the receiver's key", func(t *testing.T) {
+		const code = "4827"
+		server, client, ctx := newReceiverServerTestPair(t, ReceiverConfig{
+			Profile: ReceiverProfileModern,
+			Auth:    ReceiverAuthPIN,
+			Code:    code,
+		})
+		if err := client.StartPINDisplay(); err != nil {
+			t.Fatalf("start PIN display: %v", err)
+		}
+		if err := client.Pair(ctx, code); err != nil {
+			t.Fatalf("PIN pair: %v", err)
+		}
+		if len(client.PairKeys.AccessoryPublic) != ed25519.PublicKeySize {
+			t.Fatal("PIN pairing did not keep the receiver's long-term key")
+		}
+		saved := &SavedCredentials{
+			PairingID:       client.PairingID,
+			Ed25519Public:   client.PairKeys.Ed25519Public,
+			Ed25519Seed:     client.PairKeys.Ed25519Private.Seed(),
+			PairingProtocol: PairingProtocolHAP,
+			ReceiverPublic:  client.PairKeys.AccessoryPublic,
+		}
+		reverify := func(receiverPublic []byte) error {
+			host, portText, err := net.SplitHostPort(server.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			port, err := strconv.Atoi(portText)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := NewAirPlayClient(host, port)
+			if err := next.Connect(ctx); err != nil {
+				t.Fatalf("reconnect: %v", err)
+			}
+			defer next.Close()
+			creds := *saved
+			creds.ReceiverPublic = receiverPublic
+			if err := next.RestorePairingCredentials(&creds); err != nil {
+				t.Fatalf("restore: %v", err)
+			}
+			return next.PairVerify(ctx)
+		}
+		if err := reverify(saved.ReceiverPublic); err != nil {
+			t.Fatalf("pair-verify with the saved receiver key: %v", err)
+		}
+		other, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reverify(other); err == nil || !strings.Contains(err.Error(), "accessory signature mismatch") {
+			t.Fatalf("pair-verify with another receiver's key = %v, want signature mismatch", err)
 		}
 	})
 

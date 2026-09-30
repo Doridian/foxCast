@@ -73,7 +73,7 @@ func TestCredentialStorePasswordSurvivesRepairingAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	if err := store.SavePairing("device-1", "pair-1", pub, priv, PairingProtocolHAP); err != nil {
+	if err := store.SavePairing("device-1", "pair-1", pub, priv, nil, PairingProtocolHAP); err != nil {
 		t.Fatalf("SavePairing: %v", err)
 	}
 	if err := store.SavePassword("device-1", ""); err != nil {
@@ -125,7 +125,11 @@ func TestCredentialStorePersistsNegotiatedPairingProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	if err := store.SavePairing("raw-device", "pair-id", pub, priv, PairingProtocolRaw); err != nil {
+	receiverPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := store.SavePairing("raw-device", "pair-id", pub, priv, receiverPub, PairingProtocolRaw); err != nil {
 		t.Fatalf("SavePairing: %v", err)
 	}
 	if err := store.SaveRestoreToken("raw-device", "restore-token"); err != nil {
@@ -153,6 +157,9 @@ func TestCredentialStorePersistsNegotiatedPairingProtocol(t *testing.T) {
 	}
 	if got := client.PairingProtocol(); got != PairingProtocolRaw {
 		t.Fatalf("restored protocol = %q, want %q", got, PairingProtocolRaw)
+	}
+	if !bytes.Equal(client.PairKeys.AccessoryPublic, receiverPub) {
+		t.Fatal("restored receiver key differs from the saved one")
 	}
 }
 
@@ -251,7 +258,7 @@ func TestCredentialStoreForget(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	for _, id := range []string{"device-1", "device-2"} {
-		if err := store.SavePairing(id, "pair-"+id, pub, priv, PairingProtocolHAP); err != nil {
+		if err := store.SavePairing(id, "pair-"+id, pub, priv, nil, PairingProtocolHAP); err != nil {
 			t.Fatalf("SavePairing %s: %v", id, err)
 		}
 	}
@@ -297,7 +304,7 @@ func TestCredentialStoreCompanionSurvivesAirPlayPairingAndReload(t *testing.T) {
 	if err := store.SaveCompanion("device-1", companion); err != nil {
 		t.Fatalf("SaveCompanion: %v", err)
 	}
-	if err := store.SavePairing("device-1", "pair-1", pub, priv, PairingProtocolHAP); err != nil {
+	if err := store.SavePairing("device-1", "pair-1", pub, priv, nil, PairingProtocolHAP); err != nil {
 		t.Fatalf("SavePairing: %v", err)
 	}
 

@@ -267,7 +267,7 @@ func connect(ctx context.Context, o *connectOptions, fairPlay bool) (*connection
 		}
 		if err := store.SavePairing(c.info.DeviceID, c.client.PairingID,
 			c.client.PairKeys.Ed25519Public, c.client.PairKeys.Ed25519Private,
-			c.client.PairingProtocol()); err != nil {
+			c.client.PairKeys.AccessoryPublic, c.client.PairingProtocol()); err != nil {
 			log.Printf("warning: failed to save credentials: %v", err)
 		} else {
 			log.Printf("credentials saved (%s)", o.credBackend)

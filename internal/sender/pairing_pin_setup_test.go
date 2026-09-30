@@ -26,6 +26,8 @@ type pinSetupServerObservation struct {
 	pairingID  []byte
 	publicKey  []byte
 	acl        []byte
+	// accessoryPublic is the long-term key the receiver sent in M6.
+	accessoryPublic ed25519.PublicKey
 }
 
 type pinSetupServerOutcome struct {
@@ -69,6 +71,27 @@ func TestPINPairSetupIncludesScreenCaptureACL(t *testing.T) {
 	if !bytes.Equal(result.acl, wantACL) {
 		t.Fatalf("encrypted screen-capture ACL = %x, want %x", result.acl, wantACL)
 	}
+	if !bytes.Equal(client.PairKeys.AccessoryPublic, result.accessoryPublic) {
+		t.Fatal("client did not keep the receiver's M6 long-term key")
+	}
+}
+
+func TestPINPairSetupRejectsForgedM6Signature(t *testing.T) {
+	const pin = "4827"
+
+	client, serverDone, closePair := newPINSetupTestPairWithM6(t, pin, true)
+	defer closePair()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := client.pairSetup(ctx, pin)
+	if err == nil || !strings.Contains(err.Error(), "accessory signature mismatch") {
+		t.Fatalf("pairSetup error = %v, want accessory signature mismatch", err)
+	}
+	waitPINSetupServer(t, serverDone)
+	if client.PairKeys.AccessoryPublic != nil {
+		t.Fatal("client kept the key from a forged M6")
+	}
 }
 
 func TestPINPairSetupRejectsWrongPINAtM3(t *testing.T) {
@@ -96,6 +119,13 @@ func TestPINPairSetupRejectsWrongPINAtM3(t *testing.T) {
 
 func newPINSetupTestPair(t *testing.T, receiverPIN string) (*AirPlayClient, <-chan pinSetupServerOutcome, func()) {
 	t.Helper()
+	return newPINSetupTestPairWithM6(t, receiverPIN, false)
+}
+
+// newPINSetupTestPairWithM6 is newPINSetupTestPair whose receiver can send an
+// M6 with a corrupted accessory signature.
+func newPINSetupTestPairWithM6(t *testing.T, receiverPIN string, forgeM6 bool) (*AirPlayClient, <-chan pinSetupServerOutcome, func()) {
+	t.Helper()
 
 	clientConn, serverConn := net.Pipe()
 	deadline := time.Now().Add(5 * time.Second)
@@ -120,7 +150,7 @@ func newPINSetupTestPair(t *testing.T, receiverPIN string) (*AirPlayClient, <-ch
 
 	serverDone := make(chan pinSetupServerOutcome, 1)
 	go func() {
-		observation, err := servePINPairSetup(serverConn, receiverPIN)
+		observation, err := servePINPairSetup(serverConn, receiverPIN, forgeM6)
 		serverDone <- pinSetupServerOutcome{observation: observation, err: err}
 	}()
 
@@ -144,7 +174,7 @@ func waitPINSetupServer(t *testing.T, done <-chan pinSetupServerOutcome) pinSetu
 	}
 }
 
-func servePINPairSetup(conn net.Conn, pin string) (pinSetupServerObservation, error) {
+func servePINPairSetup(conn net.Conn, pin string, forgeM6 bool) (pinSetupServerObservation, error) {
 	var observation pinSetupServerObservation
 	reader := bufio.NewReader(conn)
 
@@ -262,7 +292,23 @@ func servePINPairSetup(conn net.Conn, pin string) (pinSetupServerObservation, er
 		return observation, fmt.Errorf("M5 controller signature is invalid")
 	}
 
-	m6 := tlv8EncodeOrdered([]tlv8Item{{Tag: tlvState, Value: []byte{0x06}}})
+	accessoryPrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x24}, ed25519.SeedSize))
+	observation.accessoryPublic = accessoryPrivate.Public().(ed25519.PublicKey)
+	accessoryID := []byte("AA:BB:CC:DD:EE:FF")
+	accessorySignKey := pinSetupTestHKDF(sharedKey, []byte("Pair-Setup-Accessory-Sign-Salt"), []byte("Pair-Setup-Accessory-Sign-Info"), 32)
+	accessorySignature := ed25519.Sign(accessoryPrivate, bytes.Join([][]byte{accessorySignKey, accessoryID, observation.accessoryPublic}, nil))
+	if forgeM6 {
+		accessorySignature[0] ^= 0xff
+	}
+	copy(nonce[4:], "PS-Msg06")
+	m6 := tlv8EncodeOrdered([]tlv8Item{
+		{Tag: tlvState, Value: []byte{0x06}},
+		{Tag: tlvEncryptedData, Value: aead.Seal(nil, nonce, tlv8EncodeOrdered([]tlv8Item{
+			{Tag: tlvIdentifier, Value: accessoryID},
+			{Tag: tlvPublicKey, Value: observation.accessoryPublic},
+			{Tag: tlvSignature, Value: accessorySignature},
+		}), nil)},
+	})
 	if err := writeRTSPTestResponse(conn, 200, nil, m6); err != nil {
 		return observation, fmt.Errorf("write M6: %w", err)
 	}

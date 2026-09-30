@@ -157,7 +157,7 @@ TLV8 {
 
 **M6 (Server → Client):** Same structure with server's credentials. Verify the server's Ed25519 signature against the server LTPK from the TXT record `pk` field.
 
-> foxCast's AirPlay client only checks M6 for an error TLV; it neither decrypts M6 nor checks the accessory signature. (The Companion client does both.)
+> foxCast decrypts M6 and checks the accessory signature (signed data `HKDF(K, "Pair-Setup-Accessory-Sign-Salt", "Pair-Setup-Accessory-Sign-Info") ‖ identifier ‖ LTPK`) against the LTPK inside M6, then keeps that LTPK as the receiver's key; the TXT `pk` is not consulted. The only exception is the empty-code transient flow when the receiver sends an M6 without encrypted data: nothing about the receiver is proven there, and those keys are never saved.
 
 ---
 
@@ -206,7 +206,7 @@ TLV8 {
 
 Verify: X25519_shared using client's ephemeral private + server's X25519 public, then verify server's Ed25519 signature against the `pk` from the mDNS TXT record.
 
-> foxCast's AirPlay client only checks that M2's encrypted data decrypts; it does not verify the signature against `pk`. (Raw pair-verify and the Companion client do verify it.)
+> foxCast verifies the signature against the receiver LTPK it kept from pair-setup M6 (saved as `receiver_public` with the credentials). Credentials saved before foxCast kept that key, and transient pairings, have none; for those it only checks that M2's encrypted data decrypts. Raw pair-verify checks against the receiver's `pk`.
 
 **M3 (Client → Server):**
 ```
