@@ -403,10 +403,7 @@ func (s *PlaybackSession) playQueue(url string, startSeconds float64) error {
 	if err := s.sendCommand(map[string]interface{}{"type": "insertPlayQueueItem", "item": item}); err != nil {
 		return err
 	}
-	if err := s.sendCommand(map[string]interface{}{
-		"type": "setProperty", "property": "isInterestedInDateRange", "value": true,
-		"item": map[string]interface{}{"uuid": s.itemUUID},
-	}); err != nil {
+	if err := s.SetProperty("isInterestedInDateRange", true); err != nil {
 		dbg("[PLAY] %v", err)
 	}
 	// Playback starts paused without this.
@@ -622,14 +619,30 @@ func (s *PlaybackSession) Rate(rate float64) error {
 	return err
 }
 
-// Scrub seeks to position seconds from the start.
+// ErrScrubUnsupported is returned by Scrub on play-queue sessions: no
+// documented source gives their /command seek form, and the legacy /scrub
+// endpoint is not part of that protocol.
+var ErrScrubUnsupported = errors.New("seeking is not supported on play-queue (tvOS 26+) sessions")
+
+// Scrub seeks to position seconds from the start. Play-queue sessions return
+// ErrScrubUnsupported.
 func (s *PlaybackSession) Scrub(position float64) error {
+	if s.queue {
+		return ErrScrubUnsupported
+	}
 	_, err := s.command("POST", fmt.Sprintf("/scrub?position=%f", position), "", nil)
 	return err
 }
 
-// SetProperty sets a receiver playback property.
+// SetProperty sets a receiver playback property: a /command setProperty on
+// the current item for play-queue sessions, PUT /setProperty otherwise.
 func (s *PlaybackSession) SetProperty(name string, value interface{}) error {
+	if s.queue {
+		return s.sendCommand(map[string]interface{}{
+			"type": "setProperty", "property": name, "value": value,
+			"item": map[string]interface{}{"uuid": s.itemUUID},
+		})
+	}
 	body, err := plist.Marshal(map[string]interface{}{"value": value}, plist.BinaryFormat)
 	if err != nil {
 		return fmt.Errorf("marshal setProperty %s: %w", name, err)

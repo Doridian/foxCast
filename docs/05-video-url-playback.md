@@ -32,6 +32,10 @@ name: …}` with names such as `currentItemChanged`, `timeJumped`,
 playback started, or the receiver closing the connection after playback
 started (tvOS does that when playback is stopped on the Apple TV) as the end of
 playback. Stopping from foxCast sends only `TEARDOWN` (no `/stop`).
+`PlaybackSession.Rate` and `SetProperty` send `/command` `setRate` and
+`setProperty` (on the current item) in this mode. No source documents a
+play-queue seek command, so `Scrub` returns `ErrScrubUnsupported` here rather
+than sending the legacy `/scrub`.
 
 If the receiver rejects the PTP SETUP with an HTTP error status, foxCast runs
 the whole legacy flow below instead. If only the remote control session fails
