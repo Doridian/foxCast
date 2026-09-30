@@ -38,7 +38,8 @@ const (
 	PairingProtocolRaw     PairingProtocol = "raw"
 )
 
-// DefaultCredentialsPath returns ~/.config/foxcast/credentials.json.
+// DefaultCredentialsPath returns $XDG_CONFIG_HOME/foxcast/credentials.json,
+// with $XDG_CONFIG_HOME defaulting to ~/.config.
 func DefaultCredentialsPath() string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
@@ -246,8 +247,8 @@ func (cs *CredentialStore) SaveCompanion(deviceID string, companion *CompanionCr
 	return cs.backend.Save(deviceID, creds)
 }
 
-// Forget removes everything saved for a device: its pairings, password and
-// screencast restore token.
+// Forget removes everything saved for a device: its AirPlay and Companion
+// pairings, password and screencast restore token.
 func (cs *CredentialStore) Forget(deviceID string) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()

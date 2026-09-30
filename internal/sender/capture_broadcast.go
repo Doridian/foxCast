@@ -167,9 +167,10 @@ func (bc *BroadcastCapture) AddSink() *BroadcastSink {
 
 // AddBackpressuredSink registers a sink for a single-destination caller. It
 // permits only one pending chunk or access unit, propagating a stalled network
-// writer back into the capture pipeline's leaky raw-frame queue. Shared daemon
-// fan-out must use AddSink so one receiver can never block another. Registration
-// fails if any sink has already claimed the capture.
+// writer back into the capture pipeline's leaky raw-frame queue. Shared
+// fan-out to several receivers must use AddSink so one receiver can never
+// block another. Registration fails if any sink has already claimed the
+// capture.
 func (bc *BroadcastCapture) AddBackpressuredSink() (*BroadcastSink, error) {
 	s := newBroadcastSinkWithPolicy(bc, true)
 	bc.mu.Lock()

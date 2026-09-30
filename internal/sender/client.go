@@ -279,7 +279,7 @@ type AirPlayClient struct {
 	cseq      atomic.Int64
 	info      *ReceiverInfo
 	PairKeys  *PairKeys
-	sessionID string // X-Apple-Session-ID, set once per connection
+	sessionID string // X-Apple-Session-ID for URL playback; also seeds the sender device ID
 	PairingID string // Our pairing identifier (UUID)
 	pairType  int    // X-Apple-HKP pairing type for the current exchange
 	// pairingProtocol records the wire protocol that actually completed on this
@@ -451,8 +451,8 @@ func (c *AirPlayClient) Close() error {
 	return nil
 }
 
-// ClearSessionID clears the session ID so requests don't include X-Apple-Session-ID.
-// Used for the raw/legacy protocol path (raw pair-verify).
+// ClearSessionID clears the session ID, so URL playback requests (the only ones
+// that carry it) omit X-Apple-Session-ID.
 func (c *AirPlayClient) ClearSessionID() {
 	c.sessionID = ""
 }

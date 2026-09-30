@@ -165,7 +165,7 @@ func Init() {
 	initOnce.Do(func() { C.gst_init(nil, nil) })
 }
 
-// ErrEOS is returned by Pipeline.Wait when the pipeline ends normally.
+// ErrEOS is returned by Pipeline.Poll when the pipeline ends normally.
 var ErrEOS = errors.New("end of stream")
 
 // HasElement reports whether an element factory is installed.

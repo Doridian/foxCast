@@ -193,7 +193,7 @@ func (c *AirPlayClient) effectivePairType() int {
 func (c *AirPlayClient) pinStartHeaders() map[string]string {
 	headers := c.pairHeaders()
 	if c.effectivePairType() != pairingTypeLegacy {
-		// Keep the generated code compatible with the four-digit plasmoid input.
+		// Ask for a four-digit on-screen code.
 		headers["X-Apple-SupportedPINLengths"] = "4"
 	}
 	return headers
@@ -366,7 +366,8 @@ func (c *AirPlayClient) rawPairSetup(ctx context.Context) ([]byte, error) {
 	return resp, nil
 }
 
-// pairSetupTransient performs a transient (ephemeral, no-PIN) pair-setup.
+// pairSetupTransient performs a transient (ephemeral, no on-screen PIN)
+// pair-setup keyed by c.transientSetupCode.
 func (c *AirPlayClient) pairSetupTransient(ctx context.Context) error {
 	// Transient M1: method=0, state=1, flags=transient
 	flags := make([]byte, 4)
@@ -775,7 +776,9 @@ func (s *srpClientSession) accessoryIdentity(m6 map[byte][]byte) (string, ed2551
 	return string(identifier), ed25519.PublicKey(publicKey), nil
 }
 
-// pairVerify establishes an encrypted channel using X25519 + Ed25519.
+// PairVerify verifies the stored long-term identity: HAP pair-verify (X25519 +
+// Ed25519, then an encrypted control channel), or raw pair-verify when that
+// is the protocol this client last completed or restored.
 func (c *AirPlayClient) PairVerify(ctx context.Context) error {
 	if c.pairingProtocol == pairingProtocolRaw {
 		return c.rawPairVerify(ctx)

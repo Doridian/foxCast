@@ -190,8 +190,9 @@ const (
 	receiverLegacyVideoMixed
 )
 
-// ReceiverServer implements enough of an AirPlay mirroring receiver to run the
-// real doubletake sender end to end without hardware. Pairing and encrypted
+// ReceiverServer implements enough of an AirPlay receiver (mirroring, URL
+// playback and speaker audio) to run the real sender end to end without
+// hardware. Pairing and encrypted
 // control are protocol-faithful; encoded media is parsed/count-checked and
 // discarded.
 type ReceiverServer struct {

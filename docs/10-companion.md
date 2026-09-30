@@ -12,8 +12,9 @@ universal link).
 Everything here comes from pyatv (`pyatv/protocols/companion`,
 `pyatv/support/opack.py`, `pyatv/auth/hap_srp.py`; MIT), which has
 implemented it against real Apple TVs since 2020, and from Home Assistant
-community reports on which deep links work. **foxCast's implementation has
-been tested against its in-process receiver only, not against hardware.**
+community reports on which deep links work. foxCast's implementation has
+opened YouTube links on a real Apple TV (pairing and app launch); the other
+apps' deep links have been tested against its in-process receiver only.
 
 Only Apple TVs (tvOS) run a Companion service. HomePods advertise one too, but
 have no apps to open; third-party AirPlay receivers have none.
@@ -22,10 +23,8 @@ have no apps to open; third-party AirPlay receivers have none.
 
 DNS-SD service `_companion-link._tcp`, on a dynamic port (often 49152+). It
 is a separate service from `_airplay._tcp`; foxCast matches the two by IP
-address. TXT keys used:
-
-Real devices send mixed-case keys (`rpFl`, `rpMd`); pyatv lowercases them, as
-does foxCast.
+address. Real devices send mixed-case keys (`rpFl`, `rpMd`); pyatv lowercases
+them, as does foxCast. TXT keys used:
 
 | Key | Meaning |
 |-----|---------|
@@ -190,18 +189,22 @@ Assistant thread *"AppleTV Integration Deep Link URLs – Which Are Working?"*
 | Twitch | `twitch://stream/<name>`, `twitch://open?stream=<name>`, web URLs | **none work** (community.home-assistant.io/t/665787); they do on Android TV |
 
 `internal/applink` maps web URLs to these: YouTube's `/watch?v=`, `/shorts/`,
-`/live/`, `/embed/` and `youtu.be` forms become the `youtube://` link (the
-timestamp and playlist are dropped, since no source documents parameters
-beyond `v`), Hulu watch/series pages become `hulu://`, and Apple TV, Disney+ and
-Pluto TV links pass through unchanged. `foxCast play -app always` hands any
-other URL to the Apple TV unchanged, for trying apps not in the table.
+`/live/`, `/embed/`, `/v/` and `youtu.be` forms (also on `m.youtube.com` and
+`youtube-nocookie.com`) become the `youtube://` link (the timestamp and
+playlist are dropped, since no source documents parameters beyond `v`), Hulu
+watch/series pages become `hulu://`, and Apple TV, Disney+ and Pluto TV links,
+as well as `youtube://` and `hulu://` links, pass through unchanged.
+`-app always` hands any other URL to the Apple TV unchanged, for trying apps
+not in the table.
 
 ## In foxCast
 
 - `foxCast play <url>` opens mapped links in the app (`-app auto`, the
-  default); `-app never` plays through AirPlay as before. The first time,
-  the Apple TV shows a PIN to enter; later launches reuse the pairing.
+  default); `-app never` plays them through AirPlay. The first time, the
+  Apple TV shows a PIN to enter (or, with "Require Password", takes a saved
+  AirPlay password without asking); later launches reuse the pairing.
   `foxCast pair -companion` pairs (again) without opening anything.
-- The tray app does the same for pasted URLs.
+- The tray app does the same for pasted URLs (Play URL…), with the same
+  `-app` flag.
 - `-companion-port` skips the mDNS lookup (e.g. for the test receiver's
   `-companion-listen`).

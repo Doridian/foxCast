@@ -26,7 +26,7 @@ type audioPCMFrameReader interface {
 }
 
 // audioPCMFramePosition preserves both halves of the capture clock mapping.
-// sourceRTP is the sample-domain position of the first PCM sample; PTS is that
+// SourceRTP is the sample-domain position of the first PCM sample; PTS is that
 // same sample's presentation time in the local monotonic clock domain.
 type audioPCMFramePosition struct {
 	PTS          time.Time

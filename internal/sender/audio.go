@@ -105,7 +105,8 @@ func randomRTPTime(reader io.Reader) (uint32, error) {
 	return binary.BigEndian.Uint32(value[:]), nil
 }
 
-// AudioCapture manages audio capture via GStreamer and local ALAC encoding.
+// AudioCapture manages audio capture via GStreamer and local ALAC or AAC-ELD
+// encoding.
 type AudioCapture struct {
 	gstCmd    *gstCommand
 	pcmPipe   io.ReadCloser
@@ -192,7 +193,8 @@ func audioCaptureCaps(layout ChannelLayout, format string) string {
 
 // AudioSource selects what StartAudioCapture records.
 type AudioSource struct {
-	// TestTone replaces capture with a 440 Hz sine wave.
+	// TestTone replaces capture with a 440 Hz sine wave (for a group capture,
+	// a beep that walks through the layout's channels).
 	TestTone bool
 	// Device is the PulseAudio source to record, such as a VirtualSink's
 	// monitor. Empty records the monitor of the current default sink.
@@ -333,7 +335,7 @@ func (ac *AudioCapture) readFramePosition(buf []byte) (int, audioPCMFramePositio
 	spf := int(codecSPF)
 	const channels = 2
 	const bytesPerSample = 2
-	pcmSize := spf * channels * bytesPerSample // 1408 bytes
+	pcmSize := spf * channels * bytesPerSample // 1408 bytes for ALAC, 1920 for AAC-ELD
 	pcm := make([]byte, pcmSize)
 	var position audioPCMFramePosition
 	var err error
@@ -1114,6 +1116,7 @@ func (s *MirrorSession) StreamAudio(ctx context.Context, capture *AudioCapture, 
 	// discarding complete frames prevents its internal queues and the stdout pipe
 	// from preserving old samples throughout video encoder startup or the wait
 	// for the next IDR. No audio clock mapping is published during this pre-roll.
+	// Speaker sessions have no video and close firstFrameSent at once.
 	dbg("[AUDIO] prewarming capture while waiting for first video frame...")
 	prewarmBuf := make([]byte, 8192)
 	prewarmedFrames := 0

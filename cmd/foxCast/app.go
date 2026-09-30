@@ -24,7 +24,7 @@ const companionLookupTimeout = 5 * time.Second
 // companionClientName is how the Apple TV lists foxCast among its remotes.
 const companionClientName = "foxCast"
 
-// appMode is play's -app setting.
+// appMode is the -app setting of play and gui.
 type appMode string
 
 const (

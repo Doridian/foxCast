@@ -19,11 +19,14 @@ For AirPlay 2 video and audio control, query `_airplay._tcp`. The `_raop._tcp` s
 |-----|---------|-------------|
 | `deviceid` | `AA:BB:CC:DD:EE:FF` | Hardware MAC address (used as unique device identifier) |
 | `features` | `0x4A7FDFD5,0x38BCB46` | 64-bit capability bitmask (two 32-bit hex values, comma-separated) |
+| `fex` | (base64) | Extended feature bit vector, little-endian, arbitrary length (same as `/info` `featuresEx`) |
 | `flags` | `0x4` | Status flags |
 | `model` | `AppleTV6,2` | Hardware model string |
 | `pk` | (128 hex chars) | Ed25519 device long-term public key (for HAP pairing) |
 | `pi` | (UUID string) | Pairing identifier |
 | `srcvers` | `366.0` | AirPlay server version |
+| `protovers` | `1.1` | Protocol version |
+| `psi` | (UUID string) | System pairing identifier |
 | `vv` | `2` | AirPlay protocol version |
 | `acl` | `0` | Access control: 0=open, 1=HomeKit users only, 2=admin only |
 
@@ -104,3 +107,13 @@ Content-Type: application/x-apple-binary-plist
 The `sourceVersion` field affects protocol behavior:
 - `>= 355` — PTP + buffered streams available
 - `> 360` — full MRP remote control tunneling available
+
+## foxCast Implementation Notes
+
+- `sender.DiscoverAirPlayDevices` browses only `_airplay._tcp` (Companion discovery for app links is in [10-companion.md](10-companion.md)). It browses on interfaces that are up, multicast-capable and have a usable non-link-local address, and skips loopback, point-to-point, and interfaces named like VPN, container, bridge or Bluetooth links (`tun`, `wg`, `tailscale`, `docker`, `veth`, `virbr`, `bnep`, …).
+- Instance names are DNS-SD unescaped (`Living\ Room` → `Living Room`). The first IPv4 address is used, else the first IPv6 one.
+- `features` is parsed as `0xLOW,0xHIGH` (or a single integer); when it is absent, the low 64 bits of `fex` are used. Feature bits ≥ 64 are only available through `fex`/`featuresEx`.
+- `GET /info` is authoritative. Fields it omits are filled first from the TXT record it embeds as DNS wire data (`txtAirPlay`), then from the mDNS advertisement. `features` falls back to the low 64 bits of `featuresEx`, and `sourceVersion` to the version in an `AirTunes/<version>` `Server` header.
+- `statusFlags` bit 7 means a configured password ("Require Password") and bit 9 one-time on-screen PIN pairing; see [03-authentication.md](03-authentication.md#foxcasts-pairing-flow).
+- Feature bits foxCast acts on: 0 (URL playback), 7 (mirroring), 9 (audio), 14 (FairPlay SAP; `fp-setup` runs only when it is set), 27 (legacy pairing, and the unmixed FairPlay key on raw pair-verify), 28 (1920×1080 default canvas when `/info` lists no displays, else 1280×720), 43/48 (transient pairing), 38/43/46/48 vs 26/51 (modern vs third-party pairing profile, see 03), 41 (PTP) and 59 (`streamConnections` audio descriptor).
+- Mirroring uses PTP only when feature 41 is set, `sourceVersion` is at least 354.54.6 (377.40.x excluded: its PTP advertisement does not yield a working mirroring session), and HAP pair-verify encrypted the control channel. Otherwise it uses NTP.

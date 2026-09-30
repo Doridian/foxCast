@@ -26,7 +26,7 @@ type VideoAccessUnit struct {
 }
 
 // videoAccessUnitReader is the timestamp-preserving boundary between the
-// GStreamer capture process and the AirPlay video sender.
+// GStreamer capture pipeline and the AirPlay video sender.
 type videoAccessUnitReader interface {
 	ReadVideoAccessUnit() (VideoAccessUnit, error)
 }

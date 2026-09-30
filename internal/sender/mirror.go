@@ -990,9 +990,11 @@ func addFairPlayRootFields(request map[string]interface{}, ekey, eiv []byte, inc
 	return true
 }
 
-// StreamFrames reads H.264 frames from the capture pipeline and sends them to the Apple TV.
-// Protocol (from UxPlay/raop_rtp_mirror.c):
-//   - SPS+PPS: sent as unencrypted codec frame (header[4]=0x01) in avcC format
+// StreamFrames reads encoded frames from the capture pipeline and sends them to
+// the Apple TV; an HEVC session is handed to streamHEVCFrames.
+// H.264 protocol (from UxPlay/raop_rtp_mirror.c):
+//   - SPS+PPS: sent as unencrypted codec frame (header[4]=0x01) in avcC format,
+//     before the first IDR and again whenever the encoder changes them
 //   - IDR VCL: sent encrypted, header[4]=0x00 header[5]=0x00, AVCC payload
 //   - non-IDR VCL: sent encrypted, header[4]=0x00 header[5]=0x00, AVCC payload
 func (s *MirrorSession) StreamFrames(ctx context.Context, capture *ScreenCapture, startDelay time.Duration) error {
@@ -2204,13 +2206,10 @@ func uuidToMAC(id string) string {
 // appStartTime is the fallback reference when a system boot clock is unavailable.
 var appStartTime = time.Now()
 
-// ntpTimeNow returns a 64-bit NTP fixed-point timestamp for mirroring frame headers.
-// Format: upper 32 bits = seconds, lower 32 bits = fractional seconds (1/2^32).
-// Uses boot-relative time (no epoch offset), matching real Apple senders.
-//
-// A forward bias is added so that frame timestamps are intentionally ahead of
-// wall-clock boot time. This avoids first-frame base_time edge cases and also
-// acts as the sender-side playout latency target.
+// videoTimestampBias is the forward bias added to video frame timestamps so
+// they are intentionally ahead of wall-clock boot time. This avoids
+// first-frame base_time edge cases and also acts as the sender-side playout
+// latency target. It is the target latency, at least 5 ms.
 func videoTimestampBias() time.Duration {
 	bias := TargetLatency()
 	if bias < 5*time.Millisecond {
@@ -2219,6 +2218,10 @@ func videoTimestampBias() time.Duration {
 	return bias
 }
 
+// ntpTimeNow returns a 64-bit NTP fixed-point timestamp for mirroring frame headers.
+// Format: upper 32 bits = seconds, lower 32 bits = fractional seconds (1/2^32).
+// Uses boot-relative time (no epoch offset), matching real Apple senders, plus
+// videoTimestampBias.
 func ntpTimeNow() uint64 {
 	return ntpTimeWithBias(videoTimestampBias())
 }

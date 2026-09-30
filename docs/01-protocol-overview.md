@@ -9,7 +9,7 @@ Three distinct modes of operation exist from a sender's perspective:
 | Mode | Description | Port |
 |------|-------------|------|
 | **Audio streaming (RAOP)** | Stream audio to an Apple TV or AirPlay speaker; uses RTSP + RTP over UDP (realtime) or TCP (buffered) | 7000 |
-| **Screen mirroring** | Stream H.264/H.265 video + AAC-ELD audio from sender's screen; HTTP session setup + proprietary TCP stream for video | 7100 |
+| **Screen mirroring** | Stream H.264/H.265 video + ALAC/AAC-ELD audio from sender's screen; RTSP session setup + proprietary TCP stream for video | 7000 (video on a SETUP-negotiated port, typically 7100) |
 | **Video URL playback** | Instruct an Apple TV to fetch and play a remote URL directly (Apple TV downloads the video itself) | 7000 |
 
 ## AirPlay 2 vs AirPlay 1 Differences
@@ -18,10 +18,10 @@ Three distinct modes of operation exist from a sender's perspective:
 |---------|-----------|-----------|
 | Pairing | RSA challenge / SRP PIN | HAP (HomeKit) SRP + X25519 + Ed25519 |
 | Control channel encryption | None (or HTTP digest auth) | ChaCha20-Poly1305 (HAP session) |
-| Stream setup | RTSP ANNOUNCE + SDP | RTSP POST /setup + binary plist |
+| Stream setup | RTSP ANNOUNCE + SDP | RTSP SETUP + binary plist |
 | Audio encryption | AES-128-CBC (key from SDP) | ChaCha20-Poly1305 (key from HAP session) |
 | Audio buffering | Realtime only (UDP) | Realtime (UDP) + Buffered (TCP) |
-| Timing synchronization | NTP (custom UDP protocol) | PTP via nqptp companion daemon |
+| Timing synchronization | NTP (custom UDP protocol) | PTP (IEEE 1588); NTP still used by many sessions |
 | Multi-room | No | Yes (via PTP sync + buffered streams) |
 | Audio codecs | ALAC, AAC-ELD | PCM, ALAC, AAC-LC, AAC-ELD, Opus |
 | Video mirroring | Port 7100, AES-CTR, NTP timing | Same mechanism, optionally H.265 |
@@ -32,16 +32,20 @@ Modern Apple TVs (tvOS 10.2+) require AirPlay 2. AirPlay 1 is not accepted.
 
 ```
 1. Discover receiver via mDNS (_airplay._tcp)
-2. TCP connect to port 7000
+2. TCP connect to the advertised port (usually 7000)
 3. GET /info — learn capabilities, get receiver's Ed25519 public key
 4. Authenticate:
-   a. HAP pair-setup (once per device, stores long-term credentials)
-   b. HAP pair-verify (every connection — establishes ChaCha20 session)
+   a. Pair-setup: transient (every connection) or PIN/password (once per
+      device, stores long-term credentials)
+   b. Pair-verify with stored credentials — HAP establishes the ChaCha20
+      session; the raw legacy variant leaves the channel plaintext
    c. FairPlay fp-setup (if receiver requires it)
 5. RTSP SETUP — negotiate session and stream parameters (binary plist)
-6. Stream media (RTP audio, or HTTP commands for URL playback)
+6. Stream media (RTP audio, mirrored video, or HTTP commands for URL playback)
 7. TEARDOWN when done
 ```
+
+foxCast's concrete choices at steps 3–4 (which pairing it tries, in what order, and when FairPlay runs) are in [03-authentication.md](03-authentication.md#foxcasts-pairing-flow).
 
 ## Key RFCs and Standards Referenced
 

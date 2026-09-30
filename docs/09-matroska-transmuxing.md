@@ -50,10 +50,13 @@ source (local path / SMB mount, or HTTP(S) with Range)   internal/mediasource
 
 `foxCast play <file.mkv|https://…/file.mkv>` sniffs the EBML magic
 (`1A 45 DF A3`), builds the session, serves it with the built-in HTTP server
-and sends `http://<local-ip>:<port>/master.m3u8` in `/play`. The receiver then
-pulls playlists and segments from foxCast, which pulls byte ranges from the
-source. `foxCast probe` prints the track table without connecting; `foxCast
-serve` serves the HLS presentation for testing with other players.
+(`internal/fileserver`; `-http-port` pins its port) and hands the receiver
+`http://<local-ip>:<port>/master.m3u8` as the play-queue item (or in `/play`).
+The receiver then pulls playlists and segments from foxCast, which pulls byte
+ranges from the source. A remote URL whose server does not answer Range
+requests is passed to the receiver untouched; `-transmux=false` disables
+transmuxing. `foxCast probe` prints the track table without connecting;
+`foxCast serve` serves the HLS presentation for testing with other players.
 
 ### Served paths
 
@@ -66,7 +69,10 @@ serve` serves the HLS presentation for testing with other players.
 
 Every compatible audio track becomes an `EXT-X-MEDIA` rendition in one group,
 so the Apple TV's audio menu lists them all (`AUTOSELECT=YES` lets it follow
-the user's language preference). The variant's `CODECS` is the union of the
+the user's language preference). The first track flagged default is
+`DEFAULT=YES`; `-audio 3,2` offers only the listed tracks, the first as the
+default. An audio segment request for a stretch without audio is answered
+with 404, since an empty fragment is invalid. The variant's `CODECS` is the union of the
 video codec and all rendition codecs, which RFC 8216 §4.3.4.2 permits. Audio
 is demuxed from video (separate playlists), as Apple recommends.
 
@@ -129,8 +135,9 @@ last segment ends at the Info duration.
 Segments are loaded once and shared by the concurrent video and audio
 requests for them. The next segment is prefetched when a video segment is
 served, and the five most recent are cached (roughly 50 MB each for a UHD
-Blu-ray remux). Only selected tracks' data is read into memory: TrueHD, DTS
-and subtitle blocks are skipped without being copied.
+Blu-ray remux). Only the served tracks' data is read into memory: SimpleBlocks
+of unused tracks (TrueHD, DTS, bitmap subtitles, …) are skipped without being
+copied.
 
 ### Video timing
 
@@ -150,7 +157,7 @@ reports keyframe PTS one or two frames late; that is a display artefact.
 Matroska timestamps are rounded (1 ms by default), which would leave
 sub-millisecond gaps or overlaps between fragments. For codecs with a constant
 frame length (AAC 1024/960, AC-3 1536, E-AC-3 from `numblkscod`, MP3, Opus from
-the first TOC, FLAC fixed-blocksize streams, ALAC) each fragment's `tfdt` is
+the first TOC, FLAC fixed-blocksize streams) each fragment's `tfdt` is
 snapped to the frame grid anchored at the track's first frame, so consecutive
 fragments line up sample-exactly. Per-sample durations come from the codec
 (frame headers), not from timestamps. Timescale is the codec sample rate.

@@ -30,7 +30,7 @@ func runPactl(args ...string) ([]byte, error) {
 }
 
 // VirtualSink is an audio output device that exists for the duration of a
-// mirror session. Applications play into it like any speaker; its monitor
+// mirror, speaker or group session. Applications play into it like any speaker; its monitor
 // source feeds the AirPlay audio stream. It is a PulseAudio null sink, which
 // pipewire-pulse serves the same way, so one path covers both sound servers.
 type VirtualSink struct {

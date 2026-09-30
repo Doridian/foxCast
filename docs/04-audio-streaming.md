@@ -55,7 +55,7 @@ Content-Type: application/x-apple-binary-plist
 {
   streams: [{
     type:          96,           // realtime UDP audio
-    audioFormat:   0x800,        // AAC-ELD 44100 Hz (see bitmask below)
+    audioFormat:   0x40000,      // ALAC 44100 Hz 16-bit stereo (see bitmask below)
     audioMode:     "default",
     controlPort:   <client_udp_control_port>,
     ct:            2,            // 1=PCM, 2=ALAC, 4=AAC-LC, 8=AAC-ELD
@@ -63,7 +63,7 @@ Content-Type: application/x-apple-binary-plist
     sr:            44100,
     latencyMin:    11025,
     latencyMax:    88200,
-    shk:           <32 bytes>,   // shared HAP key (from pair-verify session)
+    shk:           <32 bytes>,   // stream key; foxCast sends a random one per stream
     isMedia:       true,
     supportsDynamicStreamID: false,
     streamConnectionID: <uint64>
@@ -83,19 +83,25 @@ Content-Type: application/x-apple-binary-plist
 
 ### Audio Format Bitmask (`audioFormat` field)
 
-| Value | Codec | Sample Rate | Bit Depth | Channels |
-|-------|-------|-------------|-----------|----------|
-| 0x001 | PCM | 44100 Hz | 16 | 2 |
-| 0x002 | PCM | 44100 Hz | 24 | 2 |
-| 0x004 | PCM | 48000 Hz | 16 | 2 |
-| 0x008 | PCM | 48000 Hz | 24 | 2 |
-| 0x020 | ALAC | 44100 Hz | 16 | 2 |
-| 0x040 | ALAC | 44100 Hz | 24 | 2 |
-| 0x080 | ALAC | 48000 Hz | 16 | 2 |
-| 0x100 | ALAC | 48000 Hz | 24 | 2 |
-| 0x200 | AAC-LC | 44100 Hz | — | 2 |
-| 0x400 | AAC-LC | 48000 Hz | — | 2 |
-| **0x800** | **AAC-ELD** | **44100 Hz** | — | **2** |
+The same bit values are used in the receiver's `supportedFormats`
+(`audioStream`, `screenStream`) masks. Bits below 18 are PCM variants.
+
+| Bit | Value | Codec | Sample Rate | Bit Depth | Channels |
+|-----|-------|-------|-------------|-----------|----------|
+| **18** | **0x40000** | **ALAC** | **44100 Hz** | **16** | **2** |
+| 19 | 0x80000 | ALAC | 44100 Hz | 24 | 2 |
+| 20 | 0x100000 | ALAC | 48000 Hz | 16 | 2 |
+| 21 | 0x200000 | ALAC | 48000 Hz | 24 | 2 |
+| 22 | 0x400000 | AAC-LC | 44100 Hz | — | 2 |
+| 23 | 0x800000 | AAC-LC | 48000 Hz | — | 2 |
+| **24** | **0x1000000** | **AAC-ELD** | **44100 Hz** | — | **2** |
+| 25 | 0x2000000 | AAC-ELD | 48000 Hz | — | 2 |
+
+foxCast sends only the two bold formats: ALAC (`ct: 2`, `spf: 352`,
+encoded locally as verbatim frames) and AAC-ELD (`ct: 8`, `spf: 480`, only in
+builds with `-tags fdk_aac`). Only those two values are confirmed by foxCast's
+code (`screenAudioFormat*` in `internal/sender/compatibility.go`); the other rows
+follow the commonly published AirPlay 2 bit list and are unverified.
 
 ### Begin Streaming
 
@@ -123,6 +129,9 @@ Bytes 4-7: RTP timestamp (uint32, big-endian; increments by spf per packet)
 Bytes 8-11: SSRC = 0x00000000
 ```
 
+foxCast, like Apple's senders, never sets the marker bit (byte 1 is always
+0x60). The first frame has sequence number 1 and a random 32-bit RTP epoch.
+
 ### Payload Encryption (AirPlay 2, ChaCha20-Poly1305)
 
 ```
@@ -136,6 +145,12 @@ Key  = HKDF-SHA512(X25519_shared, "Control-Salt", "Control-Write-Encryption-Key"
       or the `shk` field from SETUP response
 Nonce: 8 bytes appended to packet; prepend 4 zero bytes to get 12-byte ChaCha nonce
 ```
+
+foxCast generates a random 32-byte key per stream and sends it as `shk`. The
+appended nonce is a little-endian packet counter starting at 0. ALAC streams
+without ChaCha20 (plain or legacy AES-CBC) also advertise `redundantAudio: 2` and send
+each frame twice (an initial burst of 8, then every new frame is preceded by
+a resend of the one 8 frames back); ChaCha20 streams send each frame once.
 
 ### ALAC QuickTime Atom (36 bytes, included in SETUP or ANNOUNCE)
 
@@ -178,19 +193,28 @@ Bytes 24-31: transmit time (t2)
 
 Timing exchange runs every 3 seconds. Use an 8-sample circular buffer and weight samples by round-trip delay. This establishes the clock offset between sender and receiver.
 
+foxCast answers the receiver's 0xd2 requests from its boot-relative clock
+(`CLOCK_BOOTTIME` with the 1900 epoch added). When a SETUP response names a
+receiver `timingPort`, it also sends three 0xd2 probes of its own, 100 ms
+apart: AirServer-style receivers wait for the sender to start the exchange.
+
 ### NTP Sync Packet (UDP, control port, type 0x54)
 
-Sent periodically to synchronize RTP timestamps with wall clock:
+Sent once per second (TimeAnnounce) to synchronize RTP timestamps with wall clock:
 
 ```
-Byte 0:     0x80
+Byte 0:     0x90 for the first packet or after a timeline reset (X=1), else 0x80
 Byte 1:     0xD4 (type 212)
-Bytes 2-3:  padding
-Bytes 4-7:  current RTP timestamp (uint32)
+Bytes 2-3:  0x0004
+Bytes 4-7:  RTP timestamp playing at the NTP time (the value below less the latency)
 Bytes 8-15: NTP timestamp (64-bit, network byte order)
-Bytes 16-19: next RTP timestamp value
-(32 bytes total)
+Bytes 16-19: RTP timestamp at which the receiver applies the mapping
+(20 bytes total)
 ```
+
+A PTP session sends the same packet as type 0xd7 (byte 1 = 0xD7, 28 bytes):
+bytes 8-15 hold PTP time in nanoseconds and bytes 20-27 the receiver's
+`ClockID`.
 
 ### PTP
 
@@ -264,18 +288,25 @@ Content-Type: application/x-dmap-tagged
 ### Retransmit Request (type 0xD5, from receiver)
 
 ```
-[0x80, 0xD5, 0x00, 0x01]
+[0x80, 0xD5]
+[request_seq: uint16 big-endian]
 [start_seq_no: uint16 big-endian]
 [count: uint16 big-endian]
 ```
 
 ### Retransmit Response (type 0xD6, from sender)
 
-Standard RTP packet with 4 bytes prepended:
+Standard RTP packet with 4 bytes prepended, one response per requested packet:
 ```
-[0x80, 0xD6, 0x00, 0x00]
+[0x80, 0xD6]
+[request_seq: uint16 big-endian]   // echoed from the request
 [... original RTP packet ...]
 ```
+
+foxCast keeps the last 512 packets and resends them byte for byte (same
+ciphertext and nonce). For the first requested packet it no longer has, it
+sends the 8-byte form `[0x80, 0xD6, request_seq, missing_seq]` instead and
+stops, telling the receiver that retrying is futile.
 
 ---
 
@@ -293,7 +324,8 @@ Session: <session_id>
 ## Audio-Only Sessions in foxCast (speakers)
 
 `foxCast mirror` uses a receiver as a speaker when it does not advertise screen
-mirroring (feature bit 7), or with `-audio-only`. `AirPlayClient.SetupAudioOnly`
+mirroring (feature bit 7), or with `-audio-only`, as does the tray app's
+audio-only action (`foxCast gui`). `AirPlayClient.SetupAudioOnly`
 (`internal/sender/audio_session.go`) runs an AirPlay 2 realtime session with
 the same control-first ordering as screen mirroring:
 
@@ -306,7 +338,9 @@ the same control-first ordering as screen mirroring:
    `timingPort`. A PTP session runs on the receiver's clock (`ClockID` from
    the SETUP response), followed as described under
    [PTP Timing in foxCast](#ptp-timing-in-foxcast-following-a-receivers-clock).
-   FairPlay root fields are added under the same rules as mirroring.
+   FairPlay root fields are added under the same rules as mirroring. A PTP
+   receiver that returns a `ClockID` but no clock headers gets a timeline
+   anchored at the sender's boot clock until PTP samples arrive.
 
    HomePods need PTP. On HomePod mini (AudioAccessory5,1, AirTunes 980.77.2,
    observed 2026-09-28) an NTP session SETUP succeeds (`skipRecord: true`),
@@ -319,11 +353,13 @@ the same control-first ordering as screen mirroring:
 3. Audio stream SETUP: one type 96 stream as above with `isMedia: true` (no
    `usingScreen`), `latencyMin: 11025`, `latencyMax: 88200`, and the ALAC or
    AAC-ELD descriptor chosen from `supportedFormats.audioStream` (ALAC when the
-   mask is absent). The descriptor layout (`controlPort` vs `streamConnections`,
+   mask is absent; `redundantAudio: 2` as above for ALAC without ChaCha20).
+   The descriptor layout (`controlPort` vs `streamConnections`,
    feature 59), its one-shot alternate on rejection, and the ChaCha20 `shk` /
    legacy AES keys are shared with mirror audio.
-4. RTP audio, TimeAnnounce sync packets and `/feedback` every 2 s, exactly as for
-   mirror audio, then TEARDOWN.
+4. RTP audio, TimeAnnounce sync packets (every second) and `/feedback` every
+   2 s, exactly as for mirror audio, then TEARDOWN. With the PTP ports open, a
+   PTP session first waits up to 3 s for the receiver's PTP clock (see below).
 
 Receivers that reject the control-only SETUP get the media-first form once:
 the session keys and the stream in one SETUP, followed by RECORD.
@@ -356,6 +392,11 @@ left/right pair:
 foxCast group -layout quad Kitchen=FL Den=FR Hall=RL Office=RR
 foxCast group -layout quad "Front Pair=FL,FR" "Back Pair=RL,RR"
 ```
+
+A member is `RECEIVER[=CH[,CH]][@DELAY]`: a discovered name, a device ID, or
+an address (`host[:port]`). Without `=CH` it plays `FL,FR`. Members connect
+one at a time (so pairing prompts do not interleave) and each gets its own
+speaker session as above.
 
 ### Options considered for keeping receivers in step
 
@@ -417,7 +458,10 @@ others playing.
 ### Channel layout and routing
 
 `-layout` accepts `stereo`, `quad`, `5.1`, `7.1` or a list (`FL,FR,RC`).
-foxCast creates a null sink with that channel map, and GStreamer records it
+foxCast creates a null sink with that channel map and makes it the default
+output until it exits (`-keep-default-sink` leaves the default alone;
+`-audio-source NAME` records a PulseAudio source instead of creating a
+sink). GStreamer records it
 with a matching `channel-mask`. Without a mask, more than two channels count
 as unpositioned and `audioconvert` would mix them. Channels are indexed in
 GStreamer's interleaving order (ascending `GstAudioChannelPosition`), and
@@ -449,8 +493,8 @@ in-process receivers at once.
 
 A PTP session is timed on the receiver's clock: audio TimeAnnounce packets
 (0xd7) and video frames carry times on its timeline. foxCast does not serve
-PTP; it follows the receiver, which is its own grandmaster, and maps local
-monotonic time onto that timeline (`mediaClock`,
+PTP; it follows the receiver (usually its own grandmaster, see below) and
+maps local monotonic time onto that timeline (`mediaClock`,
 `internal/sender/media_clock.go`). The mapping slews toward each new
 estimate at up to 500 ppm and never runs backwards; it only jumps, forwards,
 when more than 20 ms behind.
@@ -496,7 +540,7 @@ minutes off the grandmaster time.
 ### Following it
 
 `PTPListener` (`internal/sender/ptp.go`) binds UDP 319 and 320 once per
-process (`foxCast mirror`, `group` and `gui` open it), takes kernel receive
+process (`foxCast mirror`, `rtmp`, `group` and `gui` open it), takes kernel receive
 timestamps (`SO_TIMESTAMPNS`), and per followed receiver:
 
 1. pairs each Sync's arrival with its Follow_Up's origin + correction;

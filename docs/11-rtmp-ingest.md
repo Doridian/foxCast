@@ -2,8 +2,9 @@
 
 `foxCast rtmp` turns a receiver into an RTMP destination. It connects and
 starts a screen mirroring session straight away, which shows a "Waiting for a
-stream at rtmp://127.0.0.1:1935/live" card. Anything a local client publishes
-to that URL then plays on the receiver. When the client stops or drops, the
+stream…" card; the URL to publish to (`rtmp://127.0.0.1:1935/live` by
+default) is logged. Anything a local client publishes there then plays on the
+receiver. When the client stops or drops, the
 card comes back and the session stays up for the next client.
 
 ```bash
@@ -27,7 +28,8 @@ authentication, so `-listen` rejects anything else.
   whenever no stream is on top, the receiver shows the card rather than black.
 - **One decode pipeline per connection** (`ingest.go`):
   `fdsrc ! flvdemux ! decodebin ! videoscale ! intervideosink` for video, plus
-  `decodebin ! pulsesink` into the receiver's virtual output device for audio.
+  `decodebin ! pulsesink` into the receiver's virtual output device for audio
+  (a `fakesink` when there is no session audio or no `pulsesink`).
   The session reads that output device's monitor, as for `-audio-source sink`.
   The device is created without becoming the desktop's default output. The
   session shows the frames through an `intervideosrc` pad, which is added once

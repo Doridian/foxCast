@@ -14,7 +14,7 @@ import (
 //
 // Usage:
 //
-//	go test -run TestCaptureM2 ./internal/airplay/ -v -count=1 -args -apple-tv=192.168.1.77
+//	go test -run TestCaptureM2 ./internal/sender/ -v -count=1 -args -apple-tv=192.168.1.77
 func TestCaptureM2(t *testing.T) {
 	host := requireAppleTV(t)
 

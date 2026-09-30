@@ -5,16 +5,16 @@
 | Algorithm | Usage |
 |-----------|-------|
 | SRP-6a (3072-bit, SHA-512, g=5) | HAP pair-setup (modern Apple TV) |
-| SRP-6a (2048-bit, SHA-1) | Legacy "fruit" pairing (tvOS < 10.2) |
+| SRP-6a (2048-bit, SHA-1) | Legacy "fruit" pairing (tvOS < 10.2); not implemented by foxCast |
 | X25519 (Curve25519) | Ephemeral ECDH key exchange in pair-verify |
 | Ed25519 | Long-term device identity keys; signature verification |
-| ChaCha20-Poly1305 | HAP session encryption (control channel), RTP audio (AirPlay 2) |
+| ChaCha20-Poly1305 | HAP session encryption (control channel), RTP audio (AirPlay 2), mirror video after HAP pair-verify |
 | HKDF-SHA512 | All key derivation throughout HAP |
-| AES-128-CTR | Mirror video stream decryption; legacy pair-verify encryption |
+| AES-128-CTR | Mirror video when the control channel is plaintext; raw (legacy) pair-verify signatures |
 | AES-128-CBC | RAOP audio stream payload (AirPlay 1, deprecated) |
 | AES-128-GCM | HAP M5-M6 pair-setup credential exchange (some variants) |
-| SHA-1 | Mirror stream AES-CTR key/IV derivation from stream connection ID |
-| SHA-512 | SRP session key hashing |
+| SHA-1 | HMAC-SHA1 tag in the FairPlay `ekey` record |
+| SHA-512 | SRP hashing; mirror AES-CTR key/IV derivation; FairPlay key mixing with the pair-verify secret; raw pair-verify AES key/IV |
 | RSA-2048-OAEP | AirPlay 1 SDP AES key encryption (legacy, not for Apple TV) |
 
 ---
@@ -30,15 +30,11 @@ HAP pair-setup uses SRP-6a as specified in RFC 5054, with non-standard Apple mod
 - Hash: SHA-512
 - Username: `"Pair-Setup"`
 
-### Apple Session Key Derivation Quirk
+### Session Key
 
-Apple's SRP session key `K` is derived non-standardly:
+HAP uses the standard SRP-6a session key `K = SHA-512(S)` (64 bytes, `S` in its natural unpadded form), which foxCast implements (`newSRPClientSession`) and Apple TVs accept. The interleaved form `K = H(S || 0x00000000) || H(S || 0x00000001)` belongs to the legacy SHA-1 fruit pairing below, not to HAP.
 
-```
-K = SHA-512(S || 0x00000000) || SHA-512(S || 0x00000001)
-```
-
-This produces a **128-byte** key rather than the standard 64-byte SHA-512 output. (Standard SRP uses a single hash of S.)
+foxCast also pads `A` and `B` to 384 bytes for `u = H(PAD(A) || PAD(B))` and `k = H(N || PAD(g))`, but uses unpadded values in the proofs `M1 = H(H(N) XOR H(g), H(I), s, A, B, K)` and `M2 = H(A, M1, K)`.
 
 ### Legacy Fruit Pairing (tvOS < 10.2)
 
@@ -82,7 +78,7 @@ Used for:
 
 ### RTP Audio Packets
 
-- Key: derived via HKDF from pair-verify shared secret (`"Control-Salt"` / `"Control-Write-Encryption-Key"`)
+- Key: foxCast generates a random 32-byte key per stream and sends it to the receiver in the stream's `shk` (with `streamConnectionKeyUseStreamEncryptionKey`); it is not HKDF-derived from the HAP session
 - Nonce: 8 bytes appended to the end of the RTP packet; prepend 4 zero bytes to form 12-byte ChaCha nonce
 - AAD: RTP header bytes 4–11 (timestamp + SSRC)
 
@@ -92,17 +88,27 @@ Used for:
 
 ## AES-128-CTR (Mirror Video)
 
-Key and IV are derived from the audio AES key and `streamConnectionID` using SHA-1:
+Used when the control channel is plaintext (raw pair-verify). Key and IV are derived from the stream key and `streamConnectionID` using SHA-512 (as in UxPlay's `mirror_buffer.c`; `deriveVideoKeys`):
 
 ```
-key_material = SHA1("AirPlayStreamKey" + decimal_string(streamConnectionID) + audio_aes_key)
-iv_material  = SHA1("AirPlayStreamIV"  + decimal_string(streamConnectionID) + audio_aes_key)
+key_material = SHA-512("AirPlayStreamKey" + decimal_string(streamConnectionID) + stream_key)
+iv_material  = SHA-512("AirPlayStreamIV"  + decimal_string(streamConnectionID) + stream_key)
 
 aes_key = key_material[0:16]
 aes_iv  = iv_material[0:16]
 ```
 
-Where `audio_aes_key` is the 16-byte AES key from FairPlay or HAP authentication. Note the use of SHA-1 (not SHA-256) — this is correct.
+Where `stream_key` is the 16-byte FairPlay stream key (see [03-authentication.md](03-authentication.md)). The CTR keystream carries over between frames: a frame's trailing partial block leaves unused keystream that encrypts the start of the next frame, after which the counter restarts on a block boundary. `mirror -direct-key` skips the derivation for debugging.
+
+## ChaCha20-Poly1305 (Mirror Video over HAP)
+
+After HAP pair-verify, the video stream is encrypted with ChaCha20-Poly1305 instead, keyed with HKDF-SHA512 (`deriveChaChaKey`):
+
+```
+ikm  = pair-verify X25519 shared secret (FairPlay AES key if none)
+salt = "DataStream-Salt" + decimal_string(streamConnectionID)
+info = "DataStream-Output-Encryption-Key"
+```
 
 ---
 
@@ -115,6 +121,8 @@ FairPlay v3 is a proprietary algorithm (not based on any standard cryptographic 
 - A custom mixing function
 
 The algorithm produces a 16-byte AES key from the 164-byte keymsg exchanged during `POST /fp-setup`. This key is used to encrypt the audio stream AES key.
+
+foxCast's sender implementation is native Go (`fpsap.go`, `fairplay_*.go`), tested against the playfair reference vectors. It generates the raw stream key itself and wraps it in the 72-byte `ekey` (FPLY header, random mask, key length, HMAC-SHA1 tag, AES-wrapped masked key).
 
 Reference implementations:
 - [openairplay/airplay2-receiver](https://github.com/openairplay/airplay2-receiver) — Python
@@ -134,7 +142,7 @@ Not used by modern Apple TV. Documented for completeness.
 
 ## Key Storage
 
-Long-term keys that must be persisted between sessions:
+Long-term keys that must be persisted between sessions (general HAP view):
 
 | Key | Description | Storage location |
 |-----|-------------|-----------------|
@@ -145,3 +153,5 @@ Long-term keys that must be persisted between sessions:
 | Receiver pairing ID | UUID string from receiver | Per-receiver, from pair-setup M6 |
 
 The receiver's LTPK and pairing ID should be validated against the `pk` TXT record in mDNS on each connection.
+
+foxCast stores one entry per receiver AirPlay device ID in `$XDG_CONFIG_HOME/foxcast/credentials.json` (default `~/.config`, mode 0600), or in the system keyring (service `foxcast`) with `-cred-backend keyring`. An entry holds our pairing ID, Ed25519 public key and 32-byte seed, the pair-verify protocol that completed (`hap` or `raw`), and optionally the receiver's configured password, a screencast restore token and the Companion pairing. The receiver's LTPK and pairing ID are not stored.

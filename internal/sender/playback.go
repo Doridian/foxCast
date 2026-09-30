@@ -14,12 +14,18 @@ import (
 )
 
 // URL playback ("AirPlay video") on AirPlay 2 receivers. The receiver fetches
-// and decodes the media itself; the sender only drives the session. The order
-// follows pyatv's AirPlayV2.play_url, which is known to work on current tvOS:
+// and decodes the media itself; the sender only drives the session. Current
+// tvOS (26/27) needs the play-queue flow (pyatv PR #2899):
 //
-//	pair-verify (encrypted control) → control SETUP (NTP timing port)
-//	→ event channel on eventPort → /feedback every 2s → RECORD
-//	→ POST /play → setProperty → /rate?value=1
+//	pair-verify (encrypted control) → SETUP (PTP video session)
+//	→ event channel on eventPort → RECORD → GET /info → SETUP (remote
+//	control session) → POST /command insertPlayQueueItem, setProperty,
+//	setRate → /feedback every 2s
+//
+// Older receivers get pyatv's AirPlayV2.play_url order instead:
+//
+//	pair-verify → SETUP (NTP timing port) → event channel on eventPort
+//	→ /feedback every 2s → RECORD → POST /play → setProperty → /rate?value=1
 //
 // The control connection must remain open for the whole playback; closing it
 // stops the video on the receiver.
@@ -58,7 +64,8 @@ const (
 type PlaybackConfig struct {
 	// StartSeconds is the initial playback position in seconds.
 	StartSeconds float64
-	// PortMin/PortMax optionally confine the local UDP timing port.
+	// PortMin/PortMax optionally confine the local UDP timing port (legacy
+	// NTP sessions only; PTP sessions open no local port).
 	PortMin, PortMax int
 }
 
@@ -473,13 +480,13 @@ func (s *PlaybackSession) startPlay(url string, startSeconds float64) error {
 	if err := s.play(url, startSeconds); err != nil {
 		return err
 	}
-	// /rate is required, as the item otherwise loads paused.
 	if err := s.SetProperty("isInterestedInDateRange", true); err != nil {
 		dbg("[PLAY] setProperty isInterestedInDateRange: %v", err)
 	}
 	if err := s.SetProperty("actionAtItemEnd", int64(0)); err != nil {
 		dbg("[PLAY] setProperty actionAtItemEnd: %v", err)
 	}
+	// /rate is required, as the item otherwise loads paused.
 	if err := s.Rate(1.0); err != nil {
 		return err
 	}
@@ -631,7 +638,9 @@ func (s *PlaybackSession) SetProperty(name string, value interface{}) error {
 	return err
 }
 
-// Info queries the receiver's current playback state.
+// Info queries the receiver's current playback state with GET
+// /playback-info. Play-queue receivers answer it with 500; their state
+// arrives on the event channel instead.
 func (s *PlaybackSession) Info() (*PlaybackInfo, error) {
 	// pyatv polls this as a plain HTTP/1.1 request on the control connection.
 	body, err := s.commandProto("GET", "/playback-info", protocolHTTP, "", nil)
@@ -652,8 +661,9 @@ func (s *PlaybackSession) Info() (*PlaybackInfo, error) {
 	return info, nil
 }
 
-// Wait polls the receiver until playback ends, ctx is cancelled, or the
-// receiver reports an error.
+// Wait blocks until playback ends, ctx is cancelled, or the receiver reports
+// an error. Play-queue sessions follow the event channel's playbackState
+// events; legacy sessions poll /playback-info.
 func (s *PlaybackSession) Wait(ctx context.Context) error {
 	if s.queue {
 		return s.waitQueue(ctx)

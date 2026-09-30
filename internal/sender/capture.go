@@ -102,7 +102,7 @@ type ScreenCapture struct {
 	pwNodeID uint32
 	dbusConn *dbus.Conn    // portal session D-Bus connection (must stay open for Wayland)
 	mixer    *videoMixer   // Wayland session compositor; nil for other captures
-	waitCh   chan struct{} // closed when process exits
+	waitCh   chan struct{} // closed when the pipeline ends
 	waitErr  error         // set before waitCh is closed
 	stopped  bool
 }
@@ -118,8 +118,9 @@ const (
 
 // CapturePreparation performs the potentially interactive part of screen
 // capture before the receiver session starts. In particular, a Wayland
-// preparation completes the screencast portal request and retains its PipeWire
-// connection without starting the encoder. Start can then apply display
+// preparation completes the screencast portal request (unless DeferSource
+// leaves it to a CaptureSwitcher) and retains its PipeWire connection without
+// starting the encoder. Start can then apply display
 // dimensions learned from the receiver's control SETUP without putting portal
 // UI inside the receiver's first-frame deadline.
 //
@@ -277,7 +278,7 @@ func (p *CapturePreparation) CanSwitchSource() bool {
 }
 
 // PrepareTestCapture validates a synthetic capture without starting its
-// GStreamer process. It mirrors PrepareCapture for callers that negotiate the
+// GStreamer pipeline. It mirrors PrepareCapture for callers that negotiate the
 // receiver canvas between preparation and encoder startup.
 func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation, error) {
 	return prepareSyntheticCapture(ctx, cfg, capturePreparationTest)
@@ -340,8 +341,8 @@ func (p *CapturePreparation) Start(width, height int) (*ScreenCapture, error) {
 
 // StartWithContext is Start with an optional lifetime context for the launched
 // encoder. The portal acquisition remains tied to the preparation context, but
-// daemon capture groups use an independent context so the encoder can outlive
-// the receiver which happened to create that shared group.
+// an independent lifetime lets the encoder outlive the receiver session that
+// started it.
 func (p *CapturePreparation) StartWithContext(lifetime context.Context, width, height int) (*ScreenCapture, error) {
 	return p.startWithContextAndCodec(lifetime, width, height, "")
 }
@@ -356,8 +357,8 @@ func (p *CapturePreparation) StartWithCodec(width, height int, codec VideoCodec)
 	return p.startWithContextAndCodec(p.ctx, width, height, codec)
 }
 
-// StartWithContextAndCodec combines StartWithContext and StartWithCodec for
-// daemon capture groups whose encoder may outlive the receiver that created it.
+// StartWithContextAndCodec combines StartWithContext and StartWithCodec, for
+// an encoder that may outlive the receiver session that started it.
 func (p *CapturePreparation) StartWithContextAndCodec(lifetime context.Context, width, height int, codec VideoCodec) (*ScreenCapture, error) {
 	return p.startWithContextAndCodec(lifetime, width, height, codec)
 }
@@ -931,7 +932,7 @@ func startPreparedWaylandCapture(ctx context.Context, cfg CaptureConfig, encoder
 // startWaylandPipeline encodes PipeWire node nodeID, read through pwFd (which
 // it closes).
 func startWaylandPipeline(ctx context.Context, cfg CaptureConfig, encoderParts encoderResult, nodeID uint32, pwFd *os.File, streamSize [2]int, timestampedOutput bool) (*ScreenCapture, error) {
-	defer pwFd.Close() // the child inherits it
+	defer pwFd.Close() // the pipeline keeps its own duplicate
 	captureCtx, cancel := context.WithCancel(ctx)
 
 	fps := cfg.FPS
@@ -1416,7 +1417,7 @@ func startPreparedTestCapture(ctx context.Context, cfg CaptureConfig, encoder en
 		fps = 30
 	}
 
-	// pattern=18 = ball (bouncing ball with motion); timeoverlay adds a frame counter.
+	// pattern=18 = ball (bouncing ball with motion); timeoverlay adds the running time.
 	// Keep test source live/infinite so long-running audio tests do not stop with EOF.
 	source := gstStage{
 		"videotestsrc", "pattern=18", "is-live=true", "do-timestamp=true",
@@ -1512,7 +1513,8 @@ func keyframeIntervalFrames(fps int) int {
 	}
 	// Capture starts before the receiver's media SETUP completes so Wayland's
 	// portal prompt stays outside the first-frame deadline. A receiver (or a
-	// later daemon sink) can therefore miss the encoder's initial IDR. Keep the
+	// sink added to the broadcast later) can therefore miss the encoder's
+	// initial IDR. Keep the
 	// next random-access point comfortably inside that deadline.
 	return fps * 2
 }

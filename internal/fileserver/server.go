@@ -1,7 +1,7 @@
 // Package fileserver serves a single local file (or any handler, such as a
 // transmuxed HLS presentation) over HTTP so an AirPlay receiver can fetch it
-// directly. The server listens on a random available port and exposes the
-// local outbound IP for building the playback URL.
+// directly. The server listens on a given port (or a random one) and
+// exposes the local outbound IP for building the playback URL.
 package fileserver
 
 import (

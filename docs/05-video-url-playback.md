@@ -1,6 +1,6 @@
 # Video URL Playback
 
-This mode instructs an Apple TV to fetch and play a remote URL. The Apple TV downloads the video itself; the sender only sends control commands. This is the simplest way to play video on an Apple TV and is the recommended first implementation target.
+This mode instructs an Apple TV to fetch and play a remote URL. The Apple TV downloads the video itself; the sender only sends control commands. foxCast implements it in `internal/sender/playback.go` (`AirPlayClient.PlayURL`), driven by `foxCast play <url|file>` (`cmd/foxCast/play.go`; `-start` sets the start position). Links to sites with a known Apple TV app (e.g. YouTube) are opened in that app over the Companion protocol instead (`-app auto|always|never`).
 
 ## Play-queue flow (tvOS 26/27) — what foxCast uses
 
@@ -28,13 +28,22 @@ channel wrapped as `{params: {data: <binary plist>}}`: `{type: "playbackState",
 name: "loading"|"playing"|"paused"|"stopped"}` and `{type: "notification",
 name: …}` with names such as `currentItemChanged`, `timeJumped`,
 `playbackLikelyToKeepUp`, `loadedTimeRangesChanged`, `playbackBufferFull`,
-`itemPlayedToEnd`. foxCast falls back to the flow below when the PTP SETUP or
-the remote control SETUP is rejected.
+`itemPlayedToEnd`. foxCast treats `itemPlayedToEnd`, a `stopped` state after
+playback started, or the receiver closing the connection after playback
+started (tvOS does that when playback is stopped on the Apple TV) as the end of
+playback. Stopping from foxCast sends only `TEARDOWN` (no `/stop`).
+
+If the receiver rejects the PTP SETUP with an HTTP error status, foxCast runs
+the whole legacy flow below instead. If only the remote control session fails
+(no `psi` in `/info`, or its SETUP is rejected), it keeps the PTP session and
+sends `POST /play` + `setProperty` + `/rate` (legacy steps 10–12) on it.
 
 A multivariant playlist without `FRAME-RATE`/`AVERAGE-BANDWIDTH` and with
 `BANDWIDTH=80000000` for a 4K HDR HEVC variant was fetched but never played
 (tvOS 27); the same variant with `FRAME-RATE=23.976`, `AVERAGE-BANDWIDTH`
-and a measured `BANDWIDTH` played. foxCast's transmuxer always sets all three.
+and a measured `BANDWIDTH` played. foxCast's transmuxer always sets
+`BANDWIDTH` and `AVERAGE-BANDWIDTH`, and `FRAME-RATE` whenever the video track
+has a DefaultDuration.
 
 The receiver connects back to the sender (UDP timing port for NTP sessions,
 and the HTTP server for local/transmuxed media), so a host firewall must allow
@@ -66,16 +75,19 @@ connection must stay open for the whole playback: closing it stops the video.
 | 10 | `POST /play` (binary plist, see below) | Retry on HTTP 500 (pyatv retries up to 3× with 1 s delay) |
 | 11 | `PUT /setProperty?isInterestedInDateRange` `{value: true}`, `PUT /setProperty?actionAtItemEnd` `{value: 0}` | |
 | 12 | `POST /rate?value=1.000000` | **Required** — otherwise the item loads paused |
-| 13 | Poll `GET /playback-info` every 1 s until `duration` disappears | Also surfaces `error.code` / `error.domain` |
+| 13 | Poll `GET /playback-info` every 1 s until `duration` disappears | Also surfaces `error.code` / `error.domain`. foxCast treats 500 before the item exists as "not ready yet" and gives up after 15 polls without a `duration` |
 
 pyatv's RTSP requests carry `CSeq`, `DACP-ID`, `Active-Remote`,
 `Client-Instance`, and `User-Agent: AirPlay/550.10`. foxCast (`internal/sender/playback.go`)
-instead reuses doubletake's hardware-tested framing: `CSeq`,
-`User-Agent: AirPlay/935.7.1`, `Content-Length`, and no DACP headers; its event
-channel replies also include `Content-Length: 0`. If URL playback misbehaves on
-hardware, these differences are the first thing to try. `/play` is sent with an
-`HTTP/1.1` request line, everything else with `RTSP/1.0`, all on the same
-encrypted connection.
+sends `CSeq`, doubletake's `User-Agent: AirPlay/935.7.1` and `Content-Length`,
+plus random per-session `DACP-ID`/`Active-Remote`/`Client-Instance` headers on
+SETUP, RECORD, `/feedback`, TEARDOWN, `GET /info` and the `/rate`, `/scrub`,
+`/stop`, `setProperty` and `/playback-info` requests (not on `/play` or
+`/command`). Its event channel replies carry `CSeq` and `Content-Length: 0`
+(no `Server`). `/play`, `/command`, `GET /info` and `GET /playback-info` are
+sent with an `HTTP/1.1` request line, everything else with `RTSP/1.0`, all on
+the same encrypted connection. After `/rate` (step 12) foxCast also sets
+`forwardEndTime` and `reverseEndTime` to an empty CMTime, best effort.
 
 ### Session SETUP body (step 5)
 
@@ -89,7 +101,7 @@ encrypted connection.
   groupContainsGroupLeader: false,
   macAddress:               "AA:BB:CC:DD:EE:FF",
   model:                    "iPhone14,3",
-  name:                     "foxCast",
+  name:                     <sender hostname>,
   osBuildVersion:           "20F66",
   osName:                   "iPhone OS",
   osVersion:                "16.5",
@@ -120,7 +132,7 @@ Headers: `Content-Type: application/x-apple-binary-plist`,
   model:                  "iPhone14,3",
   clientBundleID:         <reverse-DNS id>,
   clientProcName:         <reverse-DNS id>,
-  osBuildVersion:         "20G1116"
+  osBuildVersion:         "20F66"
   // pyatv also sends timing fields (secureConnectionMs, infoMs, connectMs,
   // authMs, bonjourMs, postAuthMs); believed optional.
 }
@@ -129,6 +141,9 @@ Headers: `Content-Type: application/x-apple-binary-plist`,
 ---
 
 ## Legacy Connection Setup (AirPlay 1 receivers)
+
+> foxCast does not implement this AirPlay 1 flow (`/reverse`, `POST /event`,
+> FCUP below); it is documented for reference.
 
 Older receivers use **two persistent TCP connections** to port 7000:
 

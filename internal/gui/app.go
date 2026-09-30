@@ -52,8 +52,8 @@ const (
 	sessionAudio
 )
 
-// session is a running (or starting) mirror or playback. Fields other than
-// cancel and done are only touched on the Qt main thread.
+// session is a running (or starting) mirror, sound or playback session.
+// Fields other than cancel and done are only touched on the Qt main thread.
 type session struct {
 	receiver Receiver
 	kind     sessionKind
@@ -397,7 +397,7 @@ func (a *app) switchSource(r Receiver) {
 	}()
 }
 
-// forget deletes r's saved pairing.
+// forget deletes r's saved pairing and password.
 func (a *app) forget(r Receiver) {
 	if r.DeviceID == "" {
 		return

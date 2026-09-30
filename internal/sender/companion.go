@@ -55,7 +55,8 @@ const (
 	companionKeyErrorMsg    = "_em"
 	companionKeyErrorCode   = "_ec"
 	companionKeyPairingData = "_pd"
-	// companionKeyPasswordType is sent with pair-setup messages; 1 is a PIN.
+	// companionKeyPasswordType is sent with pair-setup messages; 1 is a PIN,
+	// also sent when the Apple TV takes its AirPlay password instead.
 	companionKeyPasswordType = "_pwTy"
 	companionPasswordTypePIN = 1
 	// companionKeyAuthType is sent with pair-verify V1; pyatv sends 4.
@@ -171,14 +172,16 @@ func (c *CompanionClient) Close() error {
 	return c.conn.Close()
 }
 
-// CompanionPairing is a pair-setup in progress: the Apple TV is showing a PIN.
+// CompanionPairing is a pair-setup in progress: the Apple TV is showing a PIN
+// or, with "Require Password" set, expects its AirPlay password.
 type CompanionPairing struct {
 	client *CompanionClient
 	salt   []byte
 	public []byte
 }
 
-// BeginPairing starts pair-setup, which makes the Apple TV display a PIN.
+// BeginPairing starts pair-setup, which makes the Apple TV display a PIN
+// (unless it requires its AirPlay password).
 func (c *CompanionClient) BeginPairing(ctx context.Context) (*CompanionPairing, error) {
 	m1 := tlv8EncodeOrdered([]tlv8Item{
 		{Tag: tlvMethod, Value: []byte{0x00}},
@@ -200,8 +203,8 @@ func (c *CompanionClient) BeginPairing(ctx context.Context) (*CompanionPairing, 
 	return &CompanionPairing{client: c, salt: salt, public: public}, nil
 }
 
-// Finish completes pair-setup with the PIN the Apple TV shows. name is how
-// the Apple TV lists this controller.
+// Finish completes pair-setup with the PIN the Apple TV shows, or its AirPlay
+// password. name is how the Apple TV lists this controller.
 func (p *CompanionPairing) Finish(ctx context.Context, pin, name string) (*CompanionCredentials, error) {
 	c := p.client
 	srp, err := newSRPClientSession(pin, p.salt, p.public)

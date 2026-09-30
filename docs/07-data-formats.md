@@ -27,8 +27,13 @@ Values longer than 255 bytes are fragmented: split into multiple TLV entries wit
 | 0x05 | EncryptedData | ciphertext + 16-byte Poly1305 tag |
 | 0x06 | State | uint8 (M1=0x01 through M6=0x06) |
 | 0x07 | Error | uint8 error code |
-| 0x09 | Permissions | uint8 |
-| 0x0A | NumDevices | uint8 |
+| 0x08 | RetryDelay | little-endian seconds to wait (with Backoff) |
+| 0x0A | Signature | 64 bytes (Ed25519) |
+| 0x11 | Name | OPACK `{name: …}` (Companion pair-setup) |
+| 0x12 | ACL | AirPlay screen-capture ACL (pair-setup M5) |
+| 0x13 | Flags | little-endian uint32 (bit 4 = transient pairing) |
+
+foxCast's tag constants are `tlv*` in `internal/sender/pairing.go`.
 
 ### Error Codes (tag 0x07)
 
@@ -65,7 +70,7 @@ Most AirPlay 2 control messages use Apple Binary Property List format.
 
 ## DMAP (Digital Audio Access Protocol)
 
-Used for audio metadata (`Content-Type: application/x-dmap-tagged`). Sent via `SET_PARAMETER`.
+Used for audio metadata (`Content-Type: application/x-dmap-tagged`). Sent via `SET_PARAMETER`. foxCast does not send DMAP metadata; documented for reference.
 
 ### Frame Format
 
@@ -140,6 +145,6 @@ For AirPlay audio: V=2, P=0, X=0, CC=0, M=0 (1 on first packet), PT=96, SSRC=0.
 Standard RTSP/1.0 (RFC 2326) with additions:
 
 - All requests include `CSeq: <incrementing integer>`
-- AirPlay adds `X-Apple-Session-ID: <UUID>` header
-- AirPlay 2 uses `SETUP`, `RECORD`, `TEARDOWN`, `SET_PARAMETER`, `FEEDBACK`, `FLUSHBUFFERED`, `SETRATEANCHORTIME` methods
+- AirPlay adds `X-Apple-Session-ID: <UUID>` header. foxCast omits it on RTSP requests (legacy CSeq/RAOP handlers can reject the combination) and sends it only on the URL playback media commands
+- AirPlay 2 uses `SETUP`, `RECORD`, `TEARDOWN`, `SET_PARAMETER`, `FLUSHBUFFERED`, `SETRATEANCHORTIME` methods, plus `POST /feedback` as the keep-alive
 - After HAP pair-verify, all RTSP traffic is encrypted in HAP frames (see [authentication.md](03-authentication.md))

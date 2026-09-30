@@ -25,7 +25,7 @@ type ReceiverPlaybackStats struct {
 	StartSeconds float64
 	// Rate is the most recent /rate value.
 	Rate float64
-	// Properties are the most recent /setProperty names in arrival order.
+	// Properties are the /setProperty names in arrival order.
 	Properties []string
 }
 

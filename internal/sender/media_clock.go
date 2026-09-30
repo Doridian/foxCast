@@ -26,11 +26,12 @@ const (
 	clockWarmupInterval  = 200 * time.Millisecond
 )
 
-// mediaClock maps local monotonic time onto the receiver's PTP timeline. The
-// receiver's X-Apple-RequestReceivedTimestamp is in the same boot-relative
-// domain as its PTP Follow_Up timestamps, so no local PTP stack is required:
-// every RTSP exchange carrying it is a clock sample for clockEstimator, and
-// the mapping slews toward the estimate.
+// mediaClock maps local monotonic time onto the receiver's PTP timeline. It
+// is steered by PTPListener's Sync estimates when the PTP ports are open.
+// Until the first of those, every RTSP exchange carrying the receiver's
+// X-Apple-RequestReceivedTimestamp is a clock sample for clockEstimator; that
+// header is on the PTP timeline only when the receiver is its own
+// grandmaster. The mapping slews toward each estimate.
 type mediaClock struct {
 	mu           sync.RWMutex
 	anchorLocal  time.Time

@@ -40,7 +40,8 @@ type Options struct {
 	// order; the first is the default. Empty offers every compatible track.
 	AudioTracks []uint64
 	// DolbyVision keeps Dolby Vision profile 5/8 metadata. When false, or
-	// for profile 7, the HDR10/SDR/HLG base layer is played instead.
+	// for profile 7, the HDR10/SDR/HLG base layer is played instead (profile
+	// 5 has no such layer and is then refused).
 	DolbyVision bool
 	// CachedSegments bounds the segment cache.
 	CachedSegments int
@@ -70,8 +71,8 @@ type TrackSummary struct {
 	Language string
 	Name     string
 	Channels int
-	// Status is "video", "audio" (offered), "default audio", or why the
-	// track is not used.
+	// Status is "video", "audio" (offered), "default audio", "subtitles
+	// (WebVTT)", or why the track is not used.
 	Status string
 }
 

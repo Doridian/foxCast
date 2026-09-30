@@ -16,7 +16,7 @@ import (
 
 // PTP follower for receivers that time sessions with PTP. Observed on HomePod
 // mini (AirTunes 980.77.2, 2026-09-28): once a SETUP lists this sender in
-// timingPeerInfo, the receiver, its own grandmaster, sends IEEE 802.1AS
+// timingPeerInfo, the receiver (usually its own grandmaster) sends IEEE 802.1AS
 // flavoured PTPv2 unicast over UDP to the listed address: two-step Sync on
 // 319 (8/s), and Follow_Up (with the 802.1AS Follow_Up information TLV),
 // Announce and Signaling on 320. It answers a Delay_Req that carries

@@ -1,7 +1,7 @@
-// Package gui is foxCast's system tray front end. The Qt user interface is
-// only built with the "gui" build tag (it needs CGo and the Qt 6 development
-// files); without it, Run reports that the GUI is unavailable. The receiver
-// list and input handling in this file are toolkit-independent.
+// Package gui is foxCast's system tray front end. The Qt user interface
+// needs CGo and the Qt 6 development files; built with the "nogui" tag, it is
+// left out and Run reports that the GUI is unavailable. The receiver list and
+// input handling in this file are toolkit-independent.
 package gui
 
 import (
@@ -138,9 +138,9 @@ func milliseconds(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 1, 64) + " ms"
 }
 
-// Backend performs the receiver work the GUI triggers. Mirror and Play block
-// until the session ends; cancelling ctx stops the session and is not an
-// error.
+// Backend performs the receiver work the GUI triggers. Mirror, StreamAudio
+// and Play block until the session ends; cancelling ctx stops the session
+// and is not an error.
 type Backend interface {
 	Discover(ctx context.Context) ([]sender.AirPlayDevice, error)
 	// Paired reports which of the device IDs have a saved pairing or password.
