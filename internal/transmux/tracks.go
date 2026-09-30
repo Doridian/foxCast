@@ -334,6 +334,7 @@ func newAudioTrack(t *mkv.Track, firstFrame *mkv.Frame) (*audioTrack, error) {
 		}
 		a.codecs, a.timescale = "alac", cfg.SampleRate
 		a.frameSamples = constant(cfg.FrameLength)
+		a.fixedSamples = cfg.FrameLength
 		entry = fmp4.AudioSampleEntry("alac", uint16(cfg.Channels), cfg.SampleRate,
 			fmp4.FullBox("alac", 0, 0, func(w *fmp4.Buf) { w.Raw(cfg.Cookie()) }))
 	}

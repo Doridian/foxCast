@@ -157,7 +157,7 @@ reports keyframe PTS one or two frames late; that is a display artefact.
 Matroska timestamps are rounded (1 ms by default), which would leave
 sub-millisecond gaps or overlaps between fragments. For codecs with a constant
 frame length (AAC 1024/960, AC-3 1536, E-AC-3 from `numblkscod`, MP3, Opus from
-the first TOC, FLAC fixed-blocksize streams) each fragment's `tfdt` is
+the first TOC, FLAC fixed-blocksize streams, ALAC) each fragment's `tfdt` is
 snapped to the frame grid anchored at the track's first frame, so consecutive
 fragments line up sample-exactly. Per-sample durations come from the codec
 (frame headers), not from timestamps. Timescale is the codec sample rate.
