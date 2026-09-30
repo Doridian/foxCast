@@ -347,43 +347,58 @@ func decodeFeatureSet(s string) (FeatureSet, error) {
 	return FeatureSet(decoded), nil
 }
 
-// Feature bit constants for AirPlay receivers.
+// AirPlay feature bit numbers (see docs/02-discovery.md), for HasFeature.
 const (
-	FeatureVideo          uint64 = 1 << 0
-	FeatureScreen         uint64 = 1 << 7
-	FeatureScreenRotate   uint64 = 1 << 8
-	FeatureAudio          uint64 = 1 << 9
-	FeatureFPSAP25        uint64 = 1 << 14
-	FeatureHomeKitPairing uint64 = 1 << 17
-	FeatureLegacyPairing  uint64 = 1 << 27
+	featureBitVideo         uint = 0
+	featureBitScreen        uint = 7
+	featureBitScreenRotate  uint = 8
+	featureBitAudio         uint = 9
+	featureBitFPSAP25       uint = 14
+	featureBitMFiAuth       uint = 26
+	featureBitLegacyPairing uint = 27
 	// Apple's APEndpointDisplayDescription defaulting path uses feature 28 to
 	// select a 1920x1080 display when the receiver omits displays[]; without it,
 	// the legacy default is 1280x720.
-	featureDefaultDisplay1080p uint64 = 1 << 28
-	FeatureSystemPairing       uint64 = 1 << 43
-	FeatureTransientPairing    uint64 = 1 << 48
-	FeatureUDPMirroring        uint64 = 1 << 49
+	featureBitDefaultDisplay1080p uint = 28
+	featureBitCoreUtilsPairing    uint = 38
+	featureBitSystemPairing       uint = 43
+	featureBitHomeKitPairing      uint = 46
+	featureBitTransientPairing    uint = 48
+	featureBitMFiPairSetup        uint = 51
+)
+
+// Feature masks for the low 64 feature bits.
+const (
+	FeatureVideo            uint64 = 1 << featureBitVideo
+	FeatureScreen           uint64 = 1 << featureBitScreen
+	FeatureScreenRotate     uint64 = 1 << featureBitScreenRotate
+	FeatureAudio            uint64 = 1 << featureBitAudio
+	FeatureFPSAP25          uint64 = 1 << featureBitFPSAP25
+	FeatureLegacyPairing    uint64 = 1 << featureBitLegacyPairing
+	FeatureSystemPairing    uint64 = 1 << featureBitSystemPairing
+	FeatureHomeKitPairing   uint64 = 1 << featureBitHomeKitPairing
+	FeatureTransientPairing uint64 = 1 << featureBitTransientPairing
 )
 
 func (d *AirPlayDevice) SupportsScreen() bool {
-	return d.HasFeature(7)
+	return d.HasFeature(featureBitScreen)
 }
 
 // SupportsScreen reports screen mirroring support (bit 7) in /info.
 func (i *ReceiverInfo) SupportsScreen() bool {
-	return i.HasFeature(7)
+	return i.HasFeature(featureBitScreen)
 }
 
 // SupportsAudio reports AirPlay audio support (bit 9), which speakers and
 // video receivers alike advertise.
 func (d *AirPlayDevice) SupportsAudio() bool {
-	return d.HasFeature(9)
+	return d.HasFeature(featureBitAudio)
 }
 
 // SupportsVideo reports AirPlay video (URL playback) support (bit 0), which
 // audio-only receivers such as speakers lack.
 func (d *AirPlayDevice) SupportsVideo() bool {
-	return d.HasFeature(0)
+	return d.HasFeature(featureBitVideo)
 }
 
 // HasFeature reports whether a legacy or extended advertised feature is set.
@@ -413,7 +428,7 @@ func (d *AirPlayDevice) SupportsTransientPairing() bool {
 }
 
 func (i *ReceiverInfo) SupportsTransientPairing() bool {
-	return i != nil && (i.HasFeature(43) || i.HasFeature(48))
+	return i != nil && (i.HasFeature(featureBitSystemPairing) || i.HasFeature(featureBitTransientPairing))
 }
 
 func supportsTransientPairing(features uint64) bool {
@@ -422,12 +437,12 @@ func supportsTransientPairing(features uint64) bool {
 
 // SupportsLegacyPairing reports the original HKP pairing feature (bit 27).
 func (d *AirPlayDevice) SupportsLegacyPairing() bool {
-	return d != nil && d.HasFeature(27)
+	return d != nil && d.HasFeature(featureBitLegacyPairing)
 }
 
 // SupportsLegacyPairing reports the original HKP pairing feature (bit 27).
 func (i *ReceiverInfo) SupportsLegacyPairing() bool {
-	return i != nil && i.HasFeature(27)
+	return i != nil && i.HasFeature(featureBitLegacyPairing)
 }
 
 // usesModernPairing reports whether the receiver can use the first-party
@@ -437,8 +452,9 @@ func (i *ReceiverInfo) usesModernPairing() bool {
 	if i == nil {
 		return false
 	}
-	coreUtils := i.HasFeature(38) || i.HasFeature(43) || i.HasFeature(46) || i.HasFeature(48)
-	thirdParty := i.HasFeature(26) || i.HasFeature(51)
+	coreUtils := i.HasFeature(featureBitCoreUtilsPairing) || i.HasFeature(featureBitSystemPairing) ||
+		i.HasFeature(featureBitHomeKitPairing) || i.HasFeature(featureBitTransientPairing)
+	thirdParty := i.HasFeature(featureBitMFiAuth) || i.HasFeature(featureBitMFiPairSetup)
 	return coreUtils && !thirdParty
 }
 
@@ -449,9 +465,9 @@ func (i *ReceiverInfo) PrefersLegacyPairing() bool {
 }
 
 func (d *AirPlayDevice) SupportsFairPlaySAP() bool {
-	return d != nil && d.HasFeature(14)
+	return d != nil && d.HasFeature(featureBitFPSAP25)
 }
 
 func (i *ReceiverInfo) SupportsFairPlaySAP() bool {
-	return i != nil && i.HasFeature(14)
+	return i != nil && i.HasFeature(featureBitFPSAP25)
 }

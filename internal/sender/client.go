@@ -197,8 +197,8 @@ func (i *ReceiverInfo) MirrorSize() (int, int) {
 	if w, h := i.DisplaySize(); w > 0 && h > 0 {
 		return w, h
 	}
-	if i.HasFeature(7) {
-		if i.HasFeature(28) {
+	if i.HasFeature(featureBitScreen) {
+		if i.HasFeature(featureBitDefaultDisplay1080p) {
 			return 1920, 1080
 		}
 		return 1280, 720
