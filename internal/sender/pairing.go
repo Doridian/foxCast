@@ -60,6 +60,7 @@ const (
 	tlvError         = 0x07
 	tlvRetryDelay    = 0x08
 	tlvSignature     = 0x0A
+	tlvName          = 0x11 // Companion: OPACK {"name": ...} of the controller
 	tlvACL           = 0x12
 	tlvFlags         = 0x13
 )
@@ -553,6 +554,61 @@ func pairingErrorName(code int) string {
 // flows). With m4Only, the exchange stops after M4 and the SRP session key
 // directly keys the encrypted control channel, replacing pair-verify.
 func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, salt, serverPubB []byte, m4Only bool) error {
+	srp, err := newSRPClientSession(pin, salt, serverPubB)
+	if err != nil {
+		return err
+	}
+
+	// M3: Send client public key + proof
+	m4Bytes, err := c.httpRequest("POST", "/pair-setup", "application/octet-stream", srp.m3(), c.pairHeaders())
+	if err != nil {
+		return fmt.Errorf("M3: %w", err)
+	}
+	if err := srp.checkM4(tlv8Decode(m4Bytes)); err != nil {
+		return err
+	}
+	if m4Only {
+		dbg("[PAIR] M4-only transient pair-setup complete; enabling encryption from SRP key")
+		return c.enableHAPEncryption(srp.key)
+	}
+
+	// M5: Exchange Ed25519 keys over encrypted channel
+	var extra []tlv8Item
+	if c.effectivePairType() == pairingTypeScreenCapture {
+		extra = append(extra, tlv8Item{Tag: tlvACL, Value: []byte(screenCaptureACL)})
+	}
+	m5, err := srp.m5([]byte(c.PairingID), c.PairKeys.Ed25519Public, c.PairKeys.Ed25519Private, extra)
+	if err != nil {
+		return err
+	}
+	m6Bytes, err := c.httpRequest("POST", "/pair-setup", "application/octet-stream", m5, c.pairHeaders())
+	if err != nil {
+		return fmt.Errorf("M5: %w", err)
+	}
+
+	m6 := tlv8Decode(m6Bytes)
+	if errTLV, ok := m6[tlvError]; ok {
+		return fmt.Errorf("pair-setup M6 error: %d", errTLV[0])
+	}
+
+	c.PairKeys.SharedSecret = srp.key
+	return nil
+}
+
+// srpClientSession is the controller side of an SRP-6a pair-setup from M2
+// onward, independent of the transport carrying the TLV8 messages.
+type srpClientSession struct {
+	clientPublic []byte
+	proof        []byte
+	// key is the SRP session key K = H(S).
+	key []byte
+	// serverProof is the M4 proof the accessory must return.
+	serverProof []byte
+}
+
+// newSRPClientSession computes the M3 values for pin from the accessory's M2
+// salt and public key.
+func newSRPClientSession(pin string, salt, serverPubB []byte) (*srpClientSession, error) {
 	username := []byte("Pair-Setup")
 	password := []byte(pin)
 
@@ -570,7 +626,7 @@ func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, sal
 
 	aBytes := make([]byte, 32)
 	if _, err := rand.Read(aBytes); err != nil {
-		return fmt.Errorf("generate SRP private key: %w", err)
+		return nil, fmt.Errorf("generate SRP private key: %w", err)
 	}
 	a := new(big.Int).SetBytes(aBytes)
 	if a.Sign() == 0 {
@@ -581,7 +637,7 @@ func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, sal
 
 	B := new(big.Int).SetBytes(serverPubB)
 	if B.Sign() <= 0 || B.Cmp(srpN) >= 0 {
-		return fmt.Errorf("M2: invalid server public key")
+		return nil, fmt.Errorf("M2: invalid server public key")
 	}
 	serverPublic := B.Bytes()
 
@@ -620,86 +676,103 @@ func (c *AirPlayClient) completeSRPExchange(ctx context.Context, pin string, sal
 	}, nil)
 	m1Proof := sha512.Sum512(proofInput)
 
-	// M3: Send client public key + proof
-	m3 := tlv8EncodeOrdered([]tlv8Item{
-		{Tag: tlvState, Value: []byte{0x03}},
-		{Tag: tlvPublicKey, Value: padTo(clientPublic, 384)},
-		{Tag: tlvProof, Value: m1Proof[:]},
-	})
-	m4Bytes, err := c.httpRequest("POST", "/pair-setup", "application/octet-stream", m3, c.pairHeaders())
-	if err != nil {
-		return fmt.Errorf("M3: %w", err)
-	}
+	// Server proof: H(A, M1, K) — A unpadded
+	m2Proof := sha512.Sum512(bytes.Join([][]byte{clientPublic, m1Proof[:], K}, nil))
 
-	m4 := tlv8Decode(m4Bytes)
+	return &srpClientSession{
+		clientPublic: clientPublic,
+		proof:        m1Proof[:],
+		key:          K,
+		serverProof:  m2Proof[:],
+	}, nil
+}
+
+// m3 returns the M3 TLV8 message: the client public key and proof.
+func (s *srpClientSession) m3() []byte {
+	return tlv8EncodeOrdered([]tlv8Item{
+		{Tag: tlvState, Value: []byte{0x03}},
+		{Tag: tlvPublicKey, Value: padTo(s.clientPublic, 384)},
+		{Tag: tlvProof, Value: s.proof},
+	})
+}
+
+// checkM4 checks the accessory's M4 for an error and, when it sends one, its
+// proof.
+func (s *srpClientSession) checkM4(m4 map[byte][]byte) error {
 	if errTLV, ok := m4[tlvError]; ok {
 		if len(errTLV) > 0 && errTLV[0] == pairingErrorAuthentication {
 			return ErrPairingAuthentication
 		}
 		return fmt.Errorf("pair-setup M4 error: %d", errTLV[0])
 	}
-
-	// Verify server proof: H(A, M1, K) — A unpadded
-	m2ProofInput := bytes.Join([][]byte{clientPublic, m1Proof[:], K}, nil)
-	m2ProofExpected := sha512.Sum512(m2ProofInput)
 	if serverProof, ok := m4[tlvProof]; ok {
-		if !bytes.Equal(serverProof, m2ProofExpected[:]) {
+		if !bytes.Equal(serverProof, s.serverProof) {
 			return fmt.Errorf("server proof mismatch")
 		}
 	}
-	if m4Only {
-		dbg("[PAIR] M4-only transient pair-setup complete; enabling encryption from SRP key")
-		return c.enableHAPEncryption(K)
-	}
+	return nil
+}
 
-	// M5: Exchange Ed25519 keys over encrypted channel
-	hkdfSalt := []byte("Pair-Setup-Encrypt-Salt")
-	hkdfInfo := []byte("Pair-Setup-Encrypt-Info")
-	sessionKey := hkdfSHA512(K, hkdfSalt, hkdfInfo, 32)
+// encryptKey is the ChaCha20-Poly1305 key of the M5/M6 sub-TLVs.
+func (s *srpClientSession) encryptKey() []byte {
+	return hkdfSHA512(s.key, []byte("Pair-Setup-Encrypt-Salt"), []byte("Pair-Setup-Encrypt-Info"), 32)
+}
 
-	clientID := []byte(c.PairingID)
+// m5 returns the M5 TLV8 message, which hands the accessory the controller's
+// long-term identity. extra items go into the encrypted sub-TLV after the
+// identity and signature.
+func (s *srpClientSession) m5(pairingID []byte, pub ed25519.PublicKey, priv ed25519.PrivateKey, extra []tlv8Item) ([]byte, error) {
+	sigKey := hkdfSHA512(s.key, []byte("Pair-Setup-Controller-Sign-Salt"), []byte("Pair-Setup-Controller-Sign-Info"), 32)
+	sigInput := bytes.Join([][]byte{sigKey, pairingID, pub}, nil)
+	signature := ed25519.Sign(priv, sigInput)
 
-	sigSalt := []byte("Pair-Setup-Controller-Sign-Salt")
-	sigInfo := []byte("Pair-Setup-Controller-Sign-Info")
-	sigKey := hkdfSHA512(K, sigSalt, sigInfo, 32)
-
-	sigInput := bytes.Join([][]byte{sigKey, clientID, c.PairKeys.Ed25519Public}, nil)
-	signature := ed25519.Sign(c.PairKeys.Ed25519Private, sigInput)
-
-	subTLVItems := []tlv8Item{
-		{Tag: tlvIdentifier, Value: clientID},
-		{Tag: tlvPublicKey, Value: c.PairKeys.Ed25519Public},
+	subTLVItems := append([]tlv8Item{
+		{Tag: tlvIdentifier, Value: pairingID},
+		{Tag: tlvPublicKey, Value: pub},
 		{Tag: tlvSignature, Value: signature},
-	}
-	if c.effectivePairType() == pairingTypeScreenCapture {
-		subTLVItems = append(subTLVItems, tlv8Item{Tag: tlvACL, Value: []byte(screenCaptureACL)})
-	}
+	}, extra...)
 	subTLV := tlv8EncodeOrdered(subTLVItems)
 
-	aead, err := chacha20poly1305.New(sessionKey)
+	aead, err := chacha20poly1305.New(s.encryptKey())
 	if err != nil {
-		return fmt.Errorf("chacha20: %w", err)
+		return nil, fmt.Errorf("chacha20: %w", err)
 	}
 	nonce := make([]byte, 12)
 	copy(nonce[4:], "PS-Msg05")
 	encrypted := aead.Seal(nil, nonce, subTLV, nil)
 
-	m5 := tlv8EncodeOrdered([]tlv8Item{
+	return tlv8EncodeOrdered([]tlv8Item{
 		{Tag: tlvEncryptedData, Value: encrypted},
 		{Tag: tlvState, Value: []byte{0x05}},
-	})
-	m6Bytes, err := c.httpRequest("POST", "/pair-setup", "application/octet-stream", m5, c.pairHeaders())
+	}), nil
+}
+
+// accessoryIdentity opens the M6 sub-TLV and checks the accessory's
+// signature, returning its pairing identifier and long-term public key.
+func (s *srpClientSession) accessoryIdentity(m6 map[byte][]byte) (string, ed25519.PublicKey, error) {
+	if errTLV, ok := m6[tlvError]; ok && len(errTLV) > 0 {
+		return "", nil, fmt.Errorf("pair-setup M6 error: %d", errTLV[0])
+	}
+	aead, err := chacha20poly1305.New(s.encryptKey())
 	if err != nil {
-		return fmt.Errorf("M5: %w", err)
+		return "", nil, fmt.Errorf("chacha20: %w", err)
 	}
-
-	m6 := tlv8Decode(m6Bytes)
-	if errTLV, ok := m6[tlvError]; ok {
-		return fmt.Errorf("pair-setup M6 error: %d", errTLV[0])
+	nonce := make([]byte, 12)
+	copy(nonce[4:], "PS-Msg06")
+	plain, err := aead.Open(nil, nonce, m6[tlvEncryptedData], nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("decrypt M6: %w", err)
 	}
-
-	c.PairKeys.SharedSecret = K
-	return nil
+	sub := tlv8Decode(plain)
+	identifier, publicKey, signature := sub[tlvIdentifier], sub[tlvPublicKey], sub[tlvSignature]
+	if len(identifier) == 0 || len(publicKey) != ed25519.PublicKeySize {
+		return "", nil, fmt.Errorf("M6: missing accessory identity")
+	}
+	signKey := hkdfSHA512(s.key, []byte("Pair-Setup-Accessory-Sign-Salt"), []byte("Pair-Setup-Accessory-Sign-Info"), 32)
+	if !ed25519.Verify(publicKey, bytes.Join([][]byte{signKey, identifier, publicKey}, nil), signature) {
+		return "", nil, fmt.Errorf("M6: accessory signature mismatch")
+	}
+	return string(identifier), ed25519.PublicKey(publicKey), nil
 }
 
 // pairVerify establishes an encrypted channel using X25519 + Ed25519.
@@ -711,90 +784,24 @@ func (c *AirPlayClient) PairVerify(ctx context.Context) error {
 }
 
 func (c *AirPlayClient) hapPairVerify(ctx context.Context) error {
-	// Generate ephemeral X25519 key pair
-	var clientPrivate, clientPublic [32]byte
-	if _, err := rand.Read(clientPrivate[:]); err != nil {
-		return fmt.Errorf("generate X25519 private key: %w", err)
+	verify, err := newHAPVerifySession()
+	if err != nil {
+		return err
 	}
-	curve25519.ScalarBaseMult(&clientPublic, &clientPrivate)
 
 	// V1: Send our ephemeral X25519 public key only.
 	// The Ed25519 long-term key was already exchanged during pair-setup M5.
-	v1 := tlv8EncodeOrdered([]tlv8Item{
-		{Tag: tlvState, Value: []byte{0x01}},
-		{Tag: tlvPublicKey, Value: clientPublic[:]},
-	})
-	dbg("[PAIR-VERIFY] V1: sending %d-byte X25519 public key", len(clientPublic[:]))
-	v2Bytes, err := c.httpRequest("POST", "/pair-verify", "application/octet-stream", v1, c.pairVerifyHeaders())
+	dbg("[PAIR-VERIFY] V1: sending %d-byte X25519 public key", len(verify.public))
+	v2Bytes, err := c.httpRequest("POST", "/pair-verify", "application/octet-stream", verify.v1(), c.pairVerifyHeaders())
 	if err != nil {
 		return fmt.Errorf("V1: %w", err)
 	}
 
-	v2 := tlv8Decode(v2Bytes)
-	if errTLV, ok := v2[tlvError]; ok {
-		return fmt.Errorf("pair-verify V2 error: %d", errTLV[0])
-	}
-
-	serverKeyData := v2[tlvPublicKey]
-	serverEncrypted := v2[tlvEncryptedData]
-	dbg("[PAIR-VERIFY] V2: server pubkey=%d bytes, encrypted=%d bytes", len(serverKeyData), len(serverEncrypted))
-
-	if len(serverKeyData) < 32 {
-		return fmt.Errorf("V2: server public key too short")
-	}
-
-	// Extract server's X25519 public key
-	var serverPublic [32]byte
-	copy(serverPublic[:], serverKeyData[:32])
-
-	// Compute shared secret
-	shared, err := curve25519.X25519(clientPrivate[:], serverPublic[:])
-	if err != nil {
-		return fmt.Errorf("x25519: %w", err)
-	}
-
-	// Derive session encryption key
-	verifyKey := hkdfSHA512(shared, []byte("Pair-Verify-Encrypt-Salt"), []byte("Pair-Verify-Encrypt-Info"), 32)
-
-	// Decrypt and verify server's response if encrypted data present
-	if len(serverEncrypted) > 0 {
-		aead, err := chacha20poly1305.New(verifyKey)
-		if err != nil {
-			return fmt.Errorf("chacha20: %w", err)
-		}
-		nonce := make([]byte, 12)
-		copy(nonce[4:], "PV-Msg02")
-		_, err = aead.Open(nil, nonce, serverEncrypted, nil)
-		if err != nil {
-			return fmt.Errorf("decrypt V2: %w", err)
-		}
-	}
-
 	// V3: Send our encrypted proof
-	// HAP spec: sign(clientX25519Public || pairingID || serverX25519Public)
-	clientIDBytes := []byte(c.PairingID)
-	sigInput := bytes.Join([][]byte{clientPublic[:], clientIDBytes, serverPublic[:]}, nil)
-	signature := ed25519.Sign(c.PairKeys.Ed25519Private, sigInput)
-	dbg("[PAIR-VERIFY] V3: sig input = clientPub(%d) || pairingID(%d) || serverPub(%d) = %d bytes",
-		len(clientPublic), len(clientIDBytes), len(serverPublic), len(sigInput))
-
-	subTLV := tlv8EncodeOrdered([]tlv8Item{
-		{Tag: tlvIdentifier, Value: clientIDBytes},
-		{Tag: tlvSignature, Value: signature},
-	})
-
-	aead, err := chacha20poly1305.New(verifyKey)
+	v3, err := verify.v3(tlv8Decode(v2Bytes), []byte(c.PairingID), c.PairKeys.Ed25519Private, nil)
 	if err != nil {
-		return fmt.Errorf("chacha20: %w", err)
+		return err
 	}
-	nonce := make([]byte, 12)
-	copy(nonce[4:], "PV-Msg03")
-	encrypted := aead.Seal(nil, nonce, subTLV, nil)
-
-	v3 := tlv8EncodeOrdered([]tlv8Item{
-		{Tag: tlvState, Value: []byte{0x03}},
-		{Tag: tlvEncryptedData, Value: encrypted},
-	})
 	dbg("[PAIR-VERIFY] V3: sending encrypted proof")
 	v4Bytes, err := c.httpRequest("POST", "/pair-verify", "application/octet-stream", v3, c.pairVerifyHeaders())
 	if err != nil {
@@ -811,7 +818,102 @@ func (c *AirPlayClient) hapPairVerify(ctx context.Context) error {
 		dbg("[PAIR-VERIFY] V4: empty response (OK)")
 	}
 
-	return c.enableHAPEncryption(shared)
+	return c.enableHAPEncryption(verify.shared)
+}
+
+// hapVerifySession is the controller side of a HAP pair-verify, independent
+// of the transport carrying the TLV8 messages.
+type hapVerifySession struct {
+	private, public []byte
+	// shared is the X25519 secret, set by v3.
+	shared []byte
+}
+
+func newHAPVerifySession() (*hapVerifySession, error) {
+	private := make([]byte, curve25519.ScalarSize)
+	if _, err := rand.Read(private); err != nil {
+		return nil, fmt.Errorf("generate X25519 private key: %w", err)
+	}
+	public, err := curve25519.X25519(private, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("x25519: %w", err)
+	}
+	return &hapVerifySession{private: private, public: public}, nil
+}
+
+// v1 returns the V1 TLV8 message: our ephemeral X25519 public key.
+func (v *hapVerifySession) v1() []byte {
+	return tlv8EncodeOrdered([]tlv8Item{
+		{Tag: tlvState, Value: []byte{0x01}},
+		{Tag: tlvPublicKey, Value: v.public},
+	})
+}
+
+// v3 processes the accessory's V2 and returns the V3 TLV8 message. When
+// accessoryKey is set, the accessory's signature must verify against it;
+// otherwise V2's encrypted data is only checked to decrypt.
+func (v *hapVerifySession) v3(v2 map[byte][]byte, pairingID []byte, priv ed25519.PrivateKey, accessoryKey ed25519.PublicKey) ([]byte, error) {
+	if errTLV, ok := v2[tlvError]; ok {
+		return nil, fmt.Errorf("pair-verify V2 error: %d", errTLV[0])
+	}
+
+	serverKeyData := v2[tlvPublicKey]
+	serverEncrypted := v2[tlvEncryptedData]
+	dbg("[PAIR-VERIFY] V2: server pubkey=%d bytes, encrypted=%d bytes", len(serverKeyData), len(serverEncrypted))
+
+	if len(serverKeyData) < 32 {
+		return nil, fmt.Errorf("V2: server public key too short")
+	}
+	serverPublic := serverKeyData[:32]
+
+	shared, err := curve25519.X25519(v.private, serverPublic)
+	if err != nil {
+		return nil, fmt.Errorf("x25519: %w", err)
+	}
+
+	// Derive session encryption key
+	verifyKey := hkdfSHA512(shared, []byte("Pair-Verify-Encrypt-Salt"), []byte("Pair-Verify-Encrypt-Info"), 32)
+	aead, err := chacha20poly1305.New(verifyKey)
+	if err != nil {
+		return nil, fmt.Errorf("chacha20: %w", err)
+	}
+
+	// Decrypt and verify server's response if encrypted data present
+	if len(serverEncrypted) > 0 || accessoryKey != nil {
+		nonce := make([]byte, 12)
+		copy(nonce[4:], "PV-Msg02")
+		plain, err := aead.Open(nil, nonce, serverEncrypted, nil)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt V2: %w", err)
+		}
+		if accessoryKey != nil {
+			sub := tlv8Decode(plain)
+			signed := bytes.Join([][]byte{serverPublic, sub[tlvIdentifier], v.public}, nil)
+			if !ed25519.Verify(accessoryKey, signed, sub[tlvSignature]) {
+				return nil, fmt.Errorf("V2: accessory signature mismatch")
+			}
+		}
+	}
+
+	// HAP spec: sign(clientX25519Public || pairingID || serverX25519Public)
+	sigInput := bytes.Join([][]byte{v.public, pairingID, serverPublic}, nil)
+	signature := ed25519.Sign(priv, sigInput)
+	dbg("[PAIR-VERIFY] V3: sig input = clientPub(%d) || pairingID(%d) || serverPub(%d) = %d bytes",
+		len(v.public), len(pairingID), len(serverPublic), len(sigInput))
+
+	subTLV := tlv8EncodeOrdered([]tlv8Item{
+		{Tag: tlvIdentifier, Value: pairingID},
+		{Tag: tlvSignature, Value: signature},
+	})
+	nonce := make([]byte, 12)
+	copy(nonce[4:], "PV-Msg03")
+	encrypted := aead.Seal(nil, nonce, subTLV, nil)
+
+	v.shared = shared
+	return tlv8EncodeOrdered([]tlv8Item{
+		{Tag: tlvState, Value: []byte{0x03}},
+		{Tag: tlvEncryptedData, Value: encrypted},
+	}), nil
 }
 
 // enableHAPEncryption switches the control channel to HAP framing, keyed from

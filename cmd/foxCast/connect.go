@@ -74,6 +74,8 @@ type connectOptions struct {
 	forcePair   bool
 	portRange   string
 	debug       bool
+	// companionPort is the receiver's Companion port; 0 finds it by mDNS.
+	companionPort int
 
 	portMin, portMax int
 
@@ -115,6 +117,11 @@ func (o *connectOptions) register(flags *flag.FlagSet) {
 	flags.StringVar(&o.code, "code", "", "pairing PIN shown on the receiver, or its configured password; prefer $"+codeEnvironment)
 	flags.BoolVar(&o.forcePair, "pair", false, "force new pairing even if credentials exist")
 	o.registerSession(flags)
+}
+
+// registerCompanion registers the flags for opening links in receiver apps.
+func (o *connectOptions) registerCompanion(flags *flag.FlagSet) {
+	flags.IntVar(&o.companionPort, "companion-port", 0, "Apple TV Companion (remote control) port for opening apps (0 = find it by mDNS)")
 }
 
 // registerSession registers the flags that do not pick or pair a particular

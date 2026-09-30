@@ -61,6 +61,8 @@ type session struct {
 	status   string
 	started  bool
 	stopping bool
+	// app is the receiver app the location was opened in, if any.
+	app string
 	// switchSource, when set, picks a new screen or window for a running
 	// mirror; switching is true while its picker is open.
 	switchSource func(context.Context) error
@@ -450,6 +452,13 @@ func (a *app) start(r Receiver, kind sessionKind, location string) {
 				}
 			})
 		},
+		OpenedInApp: func(app string) {
+			mainthread.Start(func() {
+				s.started, s.app = true, app
+				a.refreshPaired()
+				a.notify(iconActive, "Opened on "+s.receiver.Name, s.title+" is open in "+app+".")
+			})
+		},
 	}
 	if kind == sessionMirror {
 		cb.SourceSwitchable = func(switchSource func(context.Context) error) {
@@ -507,6 +516,8 @@ func (a *app) finished(s *session, err error, stopped bool) {
 			what = "Playing on " + name + " failed"
 		}
 		a.notify(iconError, what, errorText(err))
+	case err == nil && s.app != "":
+		// Nothing to report: the app plays on its own.
 	case err == nil && !stopped && s.started && s.kind == sessionPlay:
 		a.notify(iconApp, "Playback finished", s.title+" finished playing on "+name+".")
 	case err == nil && !stopped && s.started && s.kind == sessionAudio:

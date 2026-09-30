@@ -100,6 +100,9 @@ type Callbacks struct {
 	Connected func(name, model, deviceID string)
 	// Started runs once media or frames reach the receiver.
 	Started func()
+	// OpenedInApp runs instead of Started when the location was handed to
+	// one of the receiver's apps; the session then ends on its own.
+	OpenedInApp func(app string)
 	// SourceSwitchable hands over a function that asks the user for a new
 	// screen or window and switches a running mirror session to it. It is
 	// only called when the capture can offer that choice.

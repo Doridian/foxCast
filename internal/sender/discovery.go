@@ -77,12 +77,25 @@ func (f *FeatureSet) UnmarshalPlist(unmarshal func(interface{}) error) error {
 
 // DiscoverAirPlayDevices browses the local network for AirPlay receivers.
 func DiscoverAirPlayDevices(ctx context.Context) ([]AirPlayDevice, error) {
+	var devices []AirPlayDevice
+	err := browseMDNS(ctx, "_airplay._tcp", func(entry *zeroconf.ServiceEntry) {
+		if dev := parseServiceEntry(entry); dev != nil {
+			devices = append(devices, *dev)
+		}
+	})
+	return devices, err
+}
+
+// browseMDNS calls found for each instance of service on the LAN interfaces
+// until ctx is done. found runs on one goroutine, and not after browseMDNS
+// returns.
+func browseMDNS(ctx context.Context, service string, found func(*zeroconf.ServiceEntry)) error {
 	ifaces, traffic, err := airPlayMDNSInterfaces()
 	if err != nil {
-		return nil, fmt.Errorf("mDNS interfaces: %w", err)
+		return fmt.Errorf("mDNS interfaces: %w", err)
 	}
 	if len(ifaces) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	resolver, err := zeroconf.NewResolver(
@@ -90,30 +103,25 @@ func DiscoverAirPlayDevices(ctx context.Context) ([]AirPlayDevice, error) {
 		zeroconf.SelectIPTraffic(traffic),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("zeroconf resolver: %w", err)
+		return fmt.Errorf("zeroconf resolver: %w", err)
 	}
 
 	entries := make(chan *zeroconf.ServiceEntry, 16)
-	var devices []AirPlayDevice
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for entry := range entries {
-			dev := parseServiceEntry(entry)
-			if dev != nil {
-				devices = append(devices, *dev)
-			}
+			found(entry)
 		}
 	}()
 
-	if err := resolver.Browse(ctx, "_airplay._tcp", "local.", entries); err != nil {
-		return nil, fmt.Errorf("browse: %w", err)
+	if err := resolver.Browse(ctx, service, "local.", entries); err != nil {
+		return fmt.Errorf("browse: %w", err)
 	}
 
 	<-ctx.Done()
 	<-done
-	return devices, nil
+	return nil
 }
 
 func airPlayMDNSInterfaces() ([]net.Interface, zeroconf.IPType, error) {

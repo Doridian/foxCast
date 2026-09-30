@@ -135,7 +135,9 @@ func cmdPlay(ctx context.Context, args []string) error {
 	var tf transmuxFlags
 	flags := flag.NewFlagSet("play", flag.ContinueOnError)
 	opts.register(flags)
+	opts.registerCompanion(flags)
 	tf.register(flags)
+	app := flags.String("app", string(appAuto), "open links in the Apple TV's own apps: auto (sites with a known app, e.g. YouTube), always (any URL), or never (play through AirPlay)")
 	start := flags.Float64("start", 0, "start position in seconds")
 	httpPort := flags.Int("http-port", 0, "local TCP port the receiver fetches local/transmuxed media from (0 = random; fix it to open it in a firewall)")
 	flags.Usage = func() {
@@ -151,6 +153,17 @@ func cmdPlay(ctx context.Context, args []string) error {
 	}
 	if err := opts.finish(1); err != nil {
 		return err
+	}
+	mode, err := parseAppMode(*app)
+	if err != nil {
+		return err
+	}
+	if link, ok := appLink(flags.Arg(0), mode); ok {
+		if err := openInApp(ctx, &opts, link, nil); err != nil {
+			return err
+		}
+		fmt.Printf("Opened in %s.\n", link.App)
+		return nil
 	}
 
 	// Probe the media before connecting so unsupported files fail fast.

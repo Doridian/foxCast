@@ -25,6 +25,7 @@ func cmdGUI(ctx context.Context, args []string) error {
 	b.opts.registerSession(flags)
 	b.mirror.register(flags)
 	b.transmux.register(flags)
+	app := flags.String("app", string(appAuto), "open links in the Apple TV's own apps: auto (sites with a known app, e.g. YouTube), always (any URL), or never (play through AirPlay)")
 	flags.IntVar(&b.httpPort, "http-port", 0, "local TCP port the receiver fetches local/transmuxed media from (0 = random; fix it to open it in a firewall)")
 	flags.Usage = func() {
 		fmt.Fprintf(flags.Output(), "Usage: foxCast gui [flags]\n")
@@ -40,6 +41,11 @@ func cmdGUI(ctx context.Context, args []string) error {
 	if err := b.mirror.finish(); err != nil {
 		return err
 	}
+	mode, err := parseAppMode(*app)
+	if err != nil {
+		return err
+	}
+	b.app = mode
 	if err := b.opts.finish(mirrorUDPPorts); err != nil {
 		return err
 	}
@@ -60,6 +66,7 @@ type guiBackend struct {
 	mirror   mirrorOptions
 	transmux transmuxFlags
 	httpPort int
+	app      appMode
 }
 
 func (b *guiBackend) Discover(ctx context.Context) ([]sender.AirPlayDevice, error) {
@@ -118,6 +125,16 @@ func (b *guiBackend) StreamAudio(ctx context.Context, r *gui.Receiver, prompt gu
 }
 
 func (b *guiBackend) Play(ctx context.Context, r *gui.Receiver, location string, prompt gui.Prompter, cb gui.Callbacks) error {
+	if link, ok := appLink(location, b.app); ok {
+		cb.Status("Opening in " + link.App + "…")
+		if err := openInApp(ctx, b.connectOptions(r, prompt, cb), link, cb.Status); err != nil {
+			return err
+		}
+		if cb.OpenedInApp != nil {
+			cb.OpenedInApp(link.App)
+		}
+		return nil
+	}
 	cb.Status("Opening media…")
 	m, err := prepareMedia(ctx, location, &b.transmux)
 	if err != nil {

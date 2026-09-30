@@ -33,6 +33,8 @@ func run(args []string) int {
 	deviceID := flags.String("device-id", "", "receiver device ID advertised by /info (random when empty)")
 	audioOnly := flags.Bool("audio-only", false, "act as a speaker: advertise no video or screen mirroring")
 	debug := flags.Bool("debug", false, "enable verbose receiver protocol logging")
+	companionListen := flags.String("companion-listen", "", "TCP address for an Apple TV Companion (remote control) listener, which records the apps and links it is asked to open (empty disables it)")
+	companionPIN := flags.String("companion-pin", "1111", "PIN the Companion listener expects for pairing")
 	statsInterval := flags.Duration("stats-interval", 0, "periodic statistics interval (0 disables periodic output)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -87,6 +89,30 @@ func run(args []string) int {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	fmt.Printf("foxCast test receiver listening on %s (profile=%s auth=%s)\n", server.Addr(), profile, auth)
 
+	companionDone := make(chan error, 1)
+	if *companionListen != "" {
+		companion, err := airplay.NewCompanionReceiver(airplay.CompanionReceiverConfig{
+			ListenAddress: *companionListen,
+			PIN:           *companionPIN,
+			Logger:        logger,
+			Debug:         *debug,
+		})
+		if err != nil {
+			stopSignals()
+			_ = server.Close()
+			fmt.Fprintf(os.Stderr, "error: start companion listener: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Companion listener on %s (PIN %s)\n", companion.Addr(), *companionPIN)
+		go func() {
+			err := companion.Serve(ctx)
+			fmt.Printf("apps opened: %s\n", strings.Join(companion.Launched(), " "))
+			companionDone <- err
+		}()
+	} else {
+		companionDone <- nil
+	}
+
 	statsDone := make(chan struct{})
 	if *statsInterval > 0 {
 		go reportReceiverStats(ctx, server, *statsInterval, statsDone)
@@ -97,6 +123,9 @@ func run(args []string) int {
 	serveErr := server.Serve(ctx)
 	stopSignals()
 	<-statsDone
+	if err := <-companionDone; err != nil && serveErr == nil {
+		serveErr = err
+	}
 	closeErr := server.Close()
 	fmt.Printf("final stats: %s\n", receiverStatsSummary(server.Stats()))
 

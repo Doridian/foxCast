@@ -22,6 +22,9 @@ type SavedCredentials struct {
 	// One-time on-screen PINs are never stored.
 	Password     string `json:"password,omitempty"`
 	RestoreToken string `json:"restore_token,omitempty"`
+	// Companion is the Apple TV's separate Companion (remote control)
+	// pairing, used to open links in its apps.
+	Companion *CompanionCredentials `json:"companion,omitempty"`
 }
 
 // PairingProtocol is the pair-verify wire protocol negotiated when credentials
@@ -222,7 +225,28 @@ func (cs *CredentialStore) SaveRestoreToken(deviceID, restoreToken string) error
 	return cs.backend.Save(deviceID, creds)
 }
 
-// Forget removes everything saved for a device: its pairing, password and
+// SaveCompanion stores a device's Companion pairing.
+func (cs *CredentialStore) SaveCompanion(deviceID string, companion *CompanionCredentials) error {
+	if !companion.Valid() {
+		return fmt.Errorf("cannot save incomplete companion credentials")
+	}
+
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	creds, err := cs.backend.Lookup(deviceID)
+	if err != nil {
+		return err
+	}
+	if creds == nil {
+		creds = &SavedCredentials{}
+	}
+	saved := *companion
+	creds.Companion = &saved
+	return cs.backend.Save(deviceID, creds)
+}
+
+// Forget removes everything saved for a device: its pairings, password and
 // screencast restore token.
 func (cs *CredentialStore) Forget(deviceID string) error {
 	cs.mu.Lock()

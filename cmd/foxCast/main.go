@@ -87,6 +87,8 @@ func cmdPair(ctx context.Context, args []string) error {
 	var opts connectOptions
 	flags := flag.NewFlagSet("pair", flag.ContinueOnError)
 	opts.register(flags)
+	opts.registerCompanion(flags)
+	companion := flags.Bool("companion", false, "pair with the Apple TV's Companion (remote control) service, which opens links in its apps")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -94,6 +96,15 @@ func cmdPair(ctx context.Context, args []string) error {
 		return err
 	}
 	opts.forcePair = true
+	if *companion {
+		client, _, err := companionConnectReceiver(ctx, &opts, nil)
+		if err != nil {
+			return err
+		}
+		_ = client.Close()
+		fmt.Println("Paired with the Apple TV's Companion service")
+		return nil
+	}
 	conn, err := connect(ctx, &opts, false)
 	if err != nil {
 		return err

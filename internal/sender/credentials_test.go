@@ -273,3 +273,44 @@ func TestCredentialStoreForget(t *testing.T) {
 		t.Fatalf("other device lost: %+v", creds)
 	}
 }
+
+func TestCredentialStoreCompanionSurvivesAirPlayPairingAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	store, err := NewCredentialStore(path)
+	if err != nil {
+		t.Fatalf("NewCredentialStore: %v", err)
+	}
+	if err := store.SaveCompanion("device-1", &CompanionCredentials{PairingID: "x"}); err == nil {
+		t.Fatal("SaveCompanion accepted incomplete credentials")
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	companion := &CompanionCredentials{
+		PairingID:      "companion-1",
+		Ed25519Public:  pub,
+		Ed25519Seed:    priv.Seed(),
+		ReceiverID:     "atv",
+		ReceiverPublic: pub,
+	}
+	if err := store.SaveCompanion("device-1", companion); err != nil {
+		t.Fatalf("SaveCompanion: %v", err)
+	}
+	if err := store.SavePairing("device-1", "pair-1", pub, priv, PairingProtocolHAP); err != nil {
+		t.Fatalf("SavePairing: %v", err)
+	}
+
+	reloaded, err := NewCredentialStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	creds := reloaded.Lookup("device-1")
+	if creds == nil || !creds.HasPairingCredentials() || !creds.Companion.Valid() {
+		t.Fatalf("Lookup = %+v, want AirPlay and Companion pairings", creds)
+	}
+	got := creds.Companion
+	if got.PairingID != "companion-1" || got.ReceiverID != "atv" || !bytes.Equal(got.ReceiverPublic, pub) {
+		t.Fatalf("Companion = %+v", got)
+	}
+}
