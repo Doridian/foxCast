@@ -20,7 +20,37 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 | Receiver groups (`group`: several speakers in step, stereo pairs, quad/5.1/7.1 routing) | ✅ against the test receiver; not yet hardware-tested |
 | Audio streaming to AirPlay 1-only (RAOP ANNOUNCE) speakers | ⏳ |
 
+## Installation
+
+foxCast links GStreamer and Qt 6 with CGo, so building needs their development files
+(GStreamer, qt6-base, layer-shell-qt). The first build of miqt takes a few minutes.
+
+```sh
+go build ./cmd/foxCast
+install -Dm644 contrib/foxcast.desktop ~/.local/share/applications/foxcast.desktop
+```
+
+Mirroring and audio also need the GStreamer base/good/bad/ugly/libav plugins at runtime and, on
+Wayland, xdg-desktop-portal.
+
 ## Usage
+
+### Tray app
+
+`foxCast gui` (or the foxCast entry in the application menu) puts an icon in the system tray.
+Clicking it opens a popup against the panel, like Plasma's Networks applet: paired receivers are
+listed first, the others below. Click a receiver to mirror the screen, play a file (native file
+picker) or paste a URL, play the computer's sound on it (Play Sound — the only action for
+speakers), or to forget its pairing. PIN and password prompts appear as dialogs. The `mirror`,
+`play` and credential flags work here too and apply to every session.
+
+It follows the Plasma style, colours and icons. The tray icon is a StatusNotifierItem (Plasma,
+and other desktops with an SNI host). On Wayland the popup is a layer-shell surface anchored to
+the panel. Without a tray host, the receiver list opens as an ordinary window.
+
+### Command line
+
+The same features are available as subcommands:
 
 ```sh
 foxCast discover                                  # list receivers
@@ -68,9 +98,8 @@ must let it in: pin the port with `-http-port 7020` (and `-port-range` for timin
 Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOXCAST_CODE`
 (preferred over `-code`). `-debug` or `FOXCAST_TRACE=1` enables protocol logging.
 
-Mirroring needs GStreamer (base/good/bad/ugly/libav plugins, run in-process) and, on
-Wayland, xdg-desktop-portal. On Wayland foxCast connects first, shows "Choosing what to share…" on
-the receiver, and then the portal asks for a screen or window; `-remember-source` reuses the last
+On Wayland, mirroring connects first, shows "Choosing what to share…" on the receiver, and then
+the portal asks for a screen or window; `-remember-source` reuses the last
 choice for that receiver instead. The receiver probes a local UDP timing port during SETUP; use
 `-port-range MIN-MAX` to pin the ports if a firewall is in the way.
 
@@ -80,30 +109,11 @@ ports 319/320, which needs `sudo setcap cap_net_bind_service=+ep` on the binary 
 those receivers are timed from their RTSP clock headers: a few milliseconds less precisely, and
 minutes off for a HomePod that follows another device's clock (a home theater's speakers). See [docs/04](docs/04-audio-streaming.md).
 
-### Tray app
-
-`foxCast gui` puts an icon in the system tray. Clicking it opens a popup against the panel,
-like Plasma's Networks applet: paired receivers are listed first, the others below. Click a
-receiver to mirror the screen, play a file (native file picker) or paste a URL, play the
-computer's sound on it (Play Sound — the only action for speakers), or to forget its pairing. PIN and password prompts appear as dialogs. The `mirror`, `play` and credential flags
-work here too and apply to every session.
-
-The GUI uses Qt 6 through [miqt](https://github.com/mappu/miqt) and is part of the default
-build. foxCast links GStreamer and Qt with CGo, so building needs their development files:
-
-```sh
-go build ./cmd/foxCast                      # needs GStreamer and Qt 6 (qt6-base, layer-shell-qt) dev files
-go build -tags nogui ./cmd/foxCast          # without the tray app: GStreamer dev files only
-install -Dm644 contrib/foxcast.desktop ~/.local/share/applications/foxcast.desktop
-```
-
-It follows the Plasma style, colours and icons. The tray icon is a StatusNotifierItem (Plasma,
-and other desktops with an SNI host). On Wayland the popup is a layer-shell surface anchored to
-the panel. Without a tray host, the receiver list opens as an ordinary window. The first build of
-miqt takes a few minutes.
-
 For hardware-free testing, run `go run ./cmd/foxCast-test-receiver -profile modern -auth none -listen 127.0.0.1:7000`
 and point foxCast at `-target 127.0.0.1`.
+
+> **Note:** for headless machines, `go build -tags nogui ./cmd/foxCast` builds foxCast without
+> the tray app (`foxCast gui`), so only the GStreamer development files are needed.
 
 ## Documentation
 
