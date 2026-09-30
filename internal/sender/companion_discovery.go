@@ -79,7 +79,11 @@ func parseCompanionEntry(entry *zeroconf.ServiceEntry) *CompanionService {
 	for _, ip := range entry.AddrIPv6 {
 		service.IPs = append(service.IPs, ip.String())
 	}
-	txt := parseTXT(entry.Text)
+	// Apple TVs send mixed-case keys (rpFl, rpMd); pyatv lowercases them.
+	txt := make(map[string]string)
+	for k, v := range parseTXT(entry.Text) {
+		txt[strings.ToLower(k)] = v
+	}
 	service.Model = txt["rpmd"]
 	// pyatv reads rpfl as hex, with or without its usual 0x prefix.
 	if flags := strings.TrimPrefix(strings.ToLower(txt["rpfl"]), "0x"); flags != "" {

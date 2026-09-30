@@ -30,7 +30,7 @@ func TestParseCompanionEntry(t *testing.T) {
 	if got.PairingDisabled() {
 		t.Fatal("PairingDisabled for flags 0x36782")
 	}
-	entry.Text = []string{"rpfl=0x627B6"}
+	entry.Text = []string{"rpFl=0x627B6"} // as a real HomePod sends it
 	if !parseCompanionEntry(entry).PairingDisabled() {
 		t.Fatal("flags 0x627B6 not reported as pairing disabled")
 	}
