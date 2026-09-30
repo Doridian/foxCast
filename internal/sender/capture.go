@@ -339,14 +339,6 @@ func (p *CapturePreparation) Start(width, height int) (*ScreenCapture, error) {
 	return p.startWithContextAndCodec(p.ctx, width, height, "")
 }
 
-// StartWithContext is Start with an optional lifetime context for the launched
-// encoder. The portal acquisition remains tied to the preparation context, but
-// an independent lifetime lets the encoder outlive the receiver session that
-// started it.
-func (p *CapturePreparation) StartWithContext(lifetime context.Context, width, height int) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(lifetime, width, height, "")
-}
-
 // StartWithCodec launches an automatic preparation after receiver negotiation
 // has selected one concrete codec. Explicit preparations accept only their
 // configured codec, preventing the capture and AirPlay framing from diverging.
@@ -355,12 +347,6 @@ func (p *CapturePreparation) StartWithCodec(width, height int, codec VideoCodec)
 		return nil, fmt.Errorf("capture preparation is nil")
 	}
 	return p.startWithContextAndCodec(p.ctx, width, height, codec)
-}
-
-// StartWithContextAndCodec combines StartWithContext and StartWithCodec, for
-// an encoder that may outlive the receiver session that started it.
-func (p *CapturePreparation) StartWithContextAndCodec(lifetime context.Context, width, height int, codec VideoCodec) (*ScreenCapture, error) {
-	return p.startWithContextAndCodec(lifetime, width, height, codec)
 }
 
 func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, width, height int, selected VideoCodec) (*ScreenCapture, error) {
