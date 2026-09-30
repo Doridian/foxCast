@@ -216,13 +216,13 @@ func PrepareCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation
 		log.Printf("[CAPTURE] warning: GStreamer RTP/ONVIF timestamp elements are unavailable; video will use output-time timestamps")
 	}
 	if kind == capturePreparationX11 {
-		if err := exec.Command("gst-inspect-1.0", "ximagesrc").Run(); err != nil {
+		if !hasGstElement("ximagesrc") {
 			return nil, fmt.Errorf("GStreamer 'ximagesrc' plugin not found; install gst-plugins-good")
 		}
 		return preparation, nil
 	}
 
-	if err := exec.Command("gst-inspect-1.0", "pipewiresrc").Run(); err != nil {
+	if !hasGstElement("pipewiresrc") {
 		return nil, fmt.Errorf("GStreamer 'pipewiresrc' plugin not found; install gst-pipewire")
 	}
 	if cfg.DeferSource {
@@ -1045,7 +1045,7 @@ func startPreparedX11Capture(ctx context.Context, cfg CaptureConfig, encoder enc
 	waitResult, err := startGStreamerCommand(cmd)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("start gst-launch: %w", err)
+		return nil, fmt.Errorf("start capture pipeline: %w", err)
 	}
 
 	capture := &ScreenCapture{
@@ -1444,7 +1444,7 @@ func startPreparedTestCapture(ctx context.Context, cfg CaptureConfig, encoder en
 	waitResult, err := startGStreamerCommand(cmd)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("start gst-launch-1.0: %w", err)
+		return nil, fmt.Errorf("start test capture pipeline: %w", err)
 	}
 
 	capture := &ScreenCapture{
