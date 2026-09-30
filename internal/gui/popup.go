@@ -456,24 +456,19 @@ func (p *popup) addRow(r Receiver, paired bool) {
 		stop.SetEnabled(!s.stopping)
 		stop.OnClicked(func() { a.stop(r) })
 		top.AddWidget(stop.QWidget)
-	case r.CanMirror():
-		mirror := qt.NewQPushButton4(qt.QIcon_FromTheme(iconMirror), "Mirror")
-		mirror.OnClicked(func() { a.mirror(r) })
-		top.AddWidget(mirror.QWidget)
-	case r.CanPlay():
-		play := qt.NewQPushButton4(qt.QIcon_FromTheme(iconFile), "Play…")
-		play.OnClicked(func() { a.playFile(r) })
-		top.AddWidget(play.QWidget)
-	case r.CanStreamAudio():
-		sound := qt.NewQPushButton4(qt.QIcon_FromTheme(iconSpeaker), "Play Sound")
-		sound.SetToolTip("Play this computer's sound on " + r.Name)
-		sound.OnClicked(func() { a.streamAudio(r) })
-		top.AddWidget(sound.QWidget)
+	default:
+		if actions := receiverActions(a, r); len(actions) > 0 {
+			primary := actions[0]
+			button := qt.NewQPushButton4(qt.QIcon_FromTheme(primary.icon), primary.short)
+			button.SetToolTip(primary.tip)
+			button.OnClicked(primary.run)
+			top.AddWidget(button.QWidget)
+		}
 	}
 	layout.AddLayout(top.QLayout)
 
 	if expanded {
-		layout.AddWidget(p.details(r, paired))
+		layout.AddWidget(p.details(r, paired, s == nil))
 	}
 	row.OnMouseReleaseEvent(func(super func(*qt.QMouseEvent), event *qt.QMouseEvent) {
 		if p.expanded == key {
@@ -506,38 +501,66 @@ func (p *popup) setClock(label *qt.QLabel, s *session, now time.Time) {
 	label.SetVisible(true)
 }
 
-// details is the expanded part of r's row.
-func (p *popup) details(r Receiver, paired bool) *qt.QWidget {
+// rowAction is something r's row offers to send to it.
+type rowAction struct {
+	icon  string
+	label string // in the expanded list
+	short string // on the row's own button
+	tip   string
+	run   func()
+}
+
+// receiverActions are the actions r supports, the row's primary one first.
+func receiverActions(a *app, r Receiver) []rowAction {
+	var actions []rowAction
+	if r.CanMirror() {
+		actions = append(actions, rowAction{icon: iconMirror, label: "Mirror Screen", short: "Mirror",
+			tip: "Share a screen or window with " + r.Name, run: func() { a.mirror(r) }})
+	}
+	if r.CanPlay() {
+		actions = append(actions,
+			rowAction{icon: iconFile, label: "Play File…", short: "Play…",
+				tip: "Play a video or audio file on " + r.Name, run: func() { a.playFile(r) }},
+			rowAction{icon: iconURL, label: "Play URL…", short: "Play URL…",
+				tip: "Play a web address or app link on " + r.Name, run: func() { a.playURL(r) }})
+	}
+	if r.CanStreamAudio() {
+		actions = append(actions, rowAction{icon: iconSpeaker, label: "Play Sound", short: "Play Sound",
+			tip: "Play this computer's sound, without video, on " + r.Name, run: func() { a.streamAudio(r) }})
+	}
+	return actions
+}
+
+// details is the expanded part of r's row: the actions r supports, listed
+// one per line, then its address. When idle is set the row's own button
+// already offers the primary action, so the list leaves it out.
+func (p *popup) details(r Receiver, paired, idle bool) *qt.QWidget {
 	a := p.app
 	box := qt.NewQWidget2()
 	layout := qt.NewQVBoxLayout(box)
-	layout.SetContentsMargins(42, 4, 0, 0)
+	layout.SetContentsMargins(34, 2, 0, 0)
+	layout.SetSpacing(0)
 
-	if r.Usable() {
-		actions := qt.NewQHBoxLayout2()
-		mirror := qt.NewQPushButton4(qt.QIcon_FromTheme(iconMirror), "Mirror Screen")
-		mirror.SetEnabled(r.CanMirror())
-		mirror.OnClicked(func() { a.mirror(r) })
-		actions.AddWidget(mirror.QWidget)
-		file := qt.NewQPushButton4(qt.QIcon_FromTheme(iconFile), "Play File…")
-		file.SetEnabled(r.CanPlay())
-		file.OnClicked(func() { a.playFile(r) })
-		actions.AddWidget(file.QWidget)
-		url := qt.NewQPushButton4(qt.QIcon_FromTheme(iconURL), "Play URL…")
-		url.SetEnabled(r.CanPlay())
-		url.OnClicked(func() { a.playURL(r) })
-		actions.AddWidget(url.QWidget)
-		sound := qt.NewQPushButton4(qt.QIcon_FromTheme(iconSpeaker), "Play Sound")
-		sound.SetToolTip("Play this computer's sound, without video, on " + r.Name)
-		sound.SetEnabled(r.CanStreamAudio())
-		sound.OnClicked(func() { a.streamAudio(r) })
-		actions.AddWidget(sound.QWidget)
-		layout.AddLayout(actions.QLayout)
-	} else {
+	actions := receiverActions(a, r)
+	switch {
+	case len(actions) == 0:
 		note := qt.NewQLabel3("This receiver does not accept anything foxCast can send.")
 		note.SetWordWrap(true)
 		note.SetEnabled(false)
+		note.SetIndent(8)
 		layout.AddWidget(note.QWidget)
+	case idle:
+		actions = actions[1:]
+	}
+	for _, action := range actions {
+		button := qt.NewQToolButton2()
+		button.SetIcon(qt.QIcon_FromTheme(action.icon))
+		button.SetText(action.label)
+		button.SetToolTip(action.tip)
+		button.SetToolButtonStyle(qt.ToolButtonTextBesideIcon)
+		button.SetAutoRaise(true)
+		button.OnClicked(action.run)
+		layout.AddWidget3(button.QWidget, 0, qt.AlignLeft)
 	}
 
 	footer := qt.NewQHBoxLayout2()
@@ -549,6 +572,9 @@ func (p *popup) details(r Receiver, paired bool) *qt.QWidget {
 	address := qt.NewQLabel3(strings.Join(info, " · "))
 	address.SetEnabled(false)
 	address.SetTextInteractionFlags(qt.TextSelectableByMouse)
+	// Wrapping lets a long model name shrink instead of widening the list.
+	address.SetWordWrap(true)
+	address.SetIndent(6)
 	footer.AddWidget2(address.QWidget, 1)
 	if paired {
 		forget := qt.NewQPushButton4(qt.QIcon_FromTheme("edit-delete-remove"), "Forget")
@@ -557,6 +583,7 @@ func (p *popup) details(r Receiver, paired bool) *qt.QWidget {
 		forget.OnClicked(func() { a.forget(r) })
 		footer.AddWidget(forget.QWidget)
 	}
+	layout.AddSpacing(4)
 	layout.AddLayout(footer.QLayout)
 	return box
 }
