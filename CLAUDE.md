@@ -17,13 +17,15 @@ internal/
                              encrypted RTSP, FairPlay SAP, event channel,
                              URL playback (playback.go), screen mirroring,
                              audio, GStreamer capture (in-process pipelines, gst_command.go;
-                             Wayland session compositor with fades, capture_mixer.go),
+                             Wayland session compositor with fades, capture_mixer.go;
+                             RTMP ingest onto that compositor, ingest.go),
                              in-process test receiver, Companion protocol client
                              (Apple TV app launching, companion.go) and test service
   gst/                       thin CGo binding to GStreamer: parse-launch pipelines, bus,
                              properties, adding/removing bins while playing
   opack/                     Apple's OPACK serialization (Companion messages)
   applink/                   web URL → Apple TV app deep link (YouTube, …)
+  rtmp/                      minimal RTMP ingest server (publish only) producing FLV, for `rtmp`
   fileserver/                local HTTP server for `play <file>` (file or transmux handler)
   mediasource/               random/streaming access to a local path or HTTP(S) Range URL
   mkv/                       Matroska demuxer (header, tracks, Cues, cluster reader)

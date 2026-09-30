@@ -99,7 +99,11 @@ func startMixerCapture(ctx context.Context, cfg CaptureConfig, encoder encoderRe
 		m.close()
 	}()
 
-	placeholder, err := m.add(placeholderBin(width, height, fps, hasGstElement("textoverlay")))
+	text := cfg.PlaceholderText
+	if text == "" {
+		text = placeholderText
+	}
+	placeholder, err := m.add(placeholderBin(width, height, fps, text, hasGstElement("textoverlay")))
 	if err != nil {
 		capture.Stop()
 		return nil, fmt.Errorf("show placeholder: %w", err)
@@ -112,19 +116,20 @@ func startMixerCapture(ctx context.Context, cfg CaptureConfig, encoder encoderRe
 			log.Printf("[CAPTURE] warning: placeholder: %v", err)
 		}
 	}()
-	log.Printf("[CAPTURE] showing the %q placeholder at %dx%d", placeholderText, width, height)
+	log.Printf("[CAPTURE] showing the %q placeholder at %dx%d", text, width, height)
 	return capture, nil
 }
 
-// placeholderBin draws the "choosing what to share" card.
-func placeholderBin(width, height, fps int, text bool) string {
+// placeholderBin draws the placeholder card, with text when textoverlay is
+// available.
+func placeholderBin(width, height, fps int, text string, overlay bool) string {
 	stages := []gstStage{
 		{"videotestsrc", "is-live=true", "pattern=solid-color", "foreground-color=" + placeholderBackground},
 		{"capsfilter", fmt.Sprintf("caps=video/x-raw,width=%d,height=%d,framerate=%d/1", width, height, fps)},
 	}
-	if text {
+	if overlay {
 		stages = append(stages, gstStage{
-			"textoverlay", "text=" + placeholderText,
+			"textoverlay", "text=" + text,
 			fmt.Sprintf("font-desc=Sans %d", max(8, height/30)),
 			"valignment=center", "halignment=center", "shaded-background=false",
 		})
@@ -265,6 +270,15 @@ func (m *videoMixer) fadeIn(ctx context.Context, s *mixerSource) error {
 		}
 	}
 	return m.fade(ctx, s, 0, 1)
+}
+
+// show makes a source fully visible at once, without a fade.
+func (m *videoMixer) show(s *mixerSource) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !s.removed {
+		s.pad.Set("alpha", "1")
+	}
 }
 
 // buffers returns how many frames the source has delivered.

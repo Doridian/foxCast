@@ -42,6 +42,10 @@ type CaptureConfig struct {
 	// CaptureSwitcher asks for the real source once the receiver shows it.
 	DeferSource bool
 
+	// PlaceholderText replaces the placeholder's "choosing what to share"
+	// wording, such as for an RTMP ingest waiting for a publisher.
+	PlaceholderText string
+
 	// RestoreToken and SaveRestoreToken let the Wayland portal skip its source
 	// picker by reusing an earlier choice. With SaveRestoreToken nil the portal
 	// is asked not to persist the choice, so every capture prompts again.
@@ -109,6 +113,7 @@ const (
 	capturePreparationX11 capturePreparationKind = iota
 	capturePreparationWayland
 	capturePreparationTest
+	capturePreparationIngest
 )
 
 // CapturePreparation performs the potentially interactive part of screen
@@ -275,6 +280,21 @@ func (p *CapturePreparation) CanSwitchSource() bool {
 // GStreamer process. It mirrors PrepareCapture for callers that negotiate the
 // receiver canvas between preparation and encoder startup.
 func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation, error) {
+	return prepareSyntheticCapture(ctx, cfg, capturePreparationTest)
+}
+
+// PrepareIngestCapture prepares a session compositor that needs no display:
+// it shows cfg.PlaceholderText until an IngestDisplay puts a stream on it.
+func PrepareIngestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation, error) {
+	for _, element := range ingestElements {
+		if !hasGstElement(element) {
+			return nil, fmt.Errorf("RTMP ingest requires the GStreamer %s element", element)
+		}
+	}
+	return prepareSyntheticCapture(ctx, cfg, capturePreparationIngest)
+}
+
+func prepareSyntheticCapture(ctx context.Context, cfg CaptureConfig, kind capturePreparationKind) (*CapturePreparation, error) {
 	if err := ValidateVideoCodec(string(cfg.VideoCodec)); err != nil {
 		return nil, err
 	}
@@ -291,7 +311,7 @@ func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrepara
 	preparation := &CapturePreparation{
 		ctx:               ctx,
 		cfg:               cfg,
-		kind:              capturePreparationTest,
+		kind:              kind,
 		timestampedOutput: supportsTimestampedVideoOutput(normalizeVideoCodec(validationCfg.VideoCodec)),
 	}
 	switch cfg.VideoCodec {
@@ -435,6 +455,8 @@ func (p *CapturePreparation) startWithContextAndCodec(lifetime context.Context, 
 		return startPreparedX11Capture(ctx, cfg, encoder, timestampedOutput)
 	case capturePreparationTest:
 		return startPreparedTestCapture(ctx, cfg, encoder, timestampedOutput)
+	case capturePreparationIngest:
+		return startMixerCapture(ctx, cfg, encoder, timestampedOutput)
 	default:
 		return nil, fmt.Errorf("invalid capture preparation kind %d", kind)
 	}

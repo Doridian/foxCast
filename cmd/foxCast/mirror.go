@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -40,18 +41,16 @@ type mirrorOptions struct {
 	rememberSource  bool
 
 	xid uint64
+
+	// ingest, when set, replaces screen capture with streams published to
+	// this RTMP listener (see rtmp.go); ingestURL is shown while none plays.
+	ingest    net.Listener
+	ingestURL string
 }
 
 func (m *mirrorOptions) register(flags *flag.FlagSet) {
-	flags.IntVar(&m.fps, "fps", 30, "frames per second")
-	flags.IntVar(&m.bitrate, "bitrate", 0, "video bitrate in kbps (0 = auto)")
-	flags.IntVar(&m.targetLatencyMs, "target-latency-ms", 0, "joint audio/video playout latency override in ms (0 = automatic)")
-	flags.StringVar(&m.hwaccel, "hwaccel", "auto", "encoder: auto, nvenc, vaapi, openh264, none (x264/x265)")
-	flags.StringVar(&m.videoCodec, "video-codec", "auto", "screen codec: auto, h264, or hevc")
+	m.registerStream(flags)
 	flags.BoolVar(&m.testMode, "test", false, "use synthetic video/audio instead of screen capture")
-	flags.BoolVar(&m.noEncrypt, "no-encrypt", false, "disable RTSP header encryption (debugging only)")
-	flags.BoolVar(&m.directKey, "direct-key", false, "use shk/shiv directly without SHA-512 derivation")
-	flags.BoolVar(&m.noAudio, "no-audio", false, "disable audio streaming")
 	flags.BoolVar(&m.audioOnly, "audio-only", false, "stream only audio, using the receiver as a speaker (automatic for receivers without screen mirroring)")
 	flags.StringVar(&m.audioSource, "audio-source", audioSourceSink, "audio to forward: \"sink\" (a virtual output device for this receiver), \"monitor\" (whatever the default output plays), or a PulseAudio source name")
 	flags.BoolVar(&m.keepDefaultSink, "keep-default-sink", false, "with -audio-source sink, do not make the virtual output device the default")
@@ -59,6 +58,19 @@ func (m *mirrorOptions) register(flags *flag.FlagSet) {
 	flags.StringVar(&m.x11WindowName, "x11-window-name", "", "X11 window name to capture; prefer -x11-window-id")
 	flags.BoolVar(&m.noCursor, "no-cursor", false, "hide the mouse cursor in the captured video")
 	flags.BoolVar(&m.rememberSource, "remember-source", false, "on Wayland, reuse this receiver's last screen/window choice instead of asking every time")
+}
+
+// registerStream registers the encoding and session flags, which do not
+// depend on what is captured.
+func (m *mirrorOptions) registerStream(flags *flag.FlagSet) {
+	flags.IntVar(&m.fps, "fps", 30, "frames per second")
+	flags.IntVar(&m.bitrate, "bitrate", 0, "video bitrate in kbps (0 = auto)")
+	flags.IntVar(&m.targetLatencyMs, "target-latency-ms", 0, "joint audio/video playout latency override in ms (0 = automatic)")
+	flags.StringVar(&m.hwaccel, "hwaccel", "auto", "encoder: auto, nvenc, vaapi, openh264, none (x264/x265)")
+	flags.StringVar(&m.videoCodec, "video-codec", "auto", "screen codec: auto, h264, or hevc")
+	flags.BoolVar(&m.noEncrypt, "no-encrypt", false, "disable RTSP header encryption (debugging only)")
+	flags.BoolVar(&m.directKey, "direct-key", false, "use shk/shiv directly without SHA-512 derivation")
+	flags.BoolVar(&m.noAudio, "no-audio", false, "disable audio streaming")
 }
 
 // finish validates the parsed flags and applies process-wide settings.
@@ -131,6 +143,9 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		audioOnly = true
 	}
 	if audioOnly {
+		if mo.ingest != nil {
+			return fmt.Errorf("%s does not support screen mirroring, which RTMP ingest needs", conn.info.Name)
+		}
 		return runSpeaker(ctx, conn, opts, mo, hooks.started)
 	}
 
@@ -165,7 +180,10 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		DeferSource:   !mo.testMode,
 	}
 	var preparation *sender.CapturePreparation
-	if mo.testMode {
+	if mo.ingest != nil {
+		captureCfg.PlaceholderText = "Waiting for a stream at " + mo.ingestURL
+		preparation, err = sender.PrepareIngestCapture(ctx, captureCfg)
+	} else if mo.testMode {
 		log.Println("using synthetic test source")
 		preparation, err = sender.PrepareTestCapture(ctx, captureCfg)
 	} else {
@@ -263,6 +281,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 		session.Close()
 	}()
 
+	ingestAudioSink := "" // where published streams play their audio
 	if !mo.noAudio && session.HasAudio() {
 		source, closeSource, err := openAudioSource(mo.audioSource, mo.testMode, !mo.keepDefaultSink, conn.info)
 		var audioCapture *sender.AudioCapture
@@ -280,6 +299,9 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 				}
 			}()
 			log.Println("audio capture started")
+			if mo.ingest != nil {
+				ingestAudioSink = strings.TrimSuffix(source.Device, ".monitor")
+			}
 		}
 	} else if !mo.noAudio {
 		log.Println("audio disabled (receiver did not provide audio ports)")
@@ -307,7 +329,15 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 			hooks.switchable(func(pickCtx context.Context) error { return switcher.Switch(pickCtx, false) })
 		}
 	}
-	if switcher != nil {
+	if mo.ingest != nil {
+		// The placeholder is streaming; now take publishers.
+		display, err := sender.NewIngestDisplay(capture, ingestAudioSink)
+		if err != nil {
+			return err
+		}
+		go serveIngest(ctx, mo.ingest, display)
+		ready()
+	} else if switcher != nil {
 		// The placeholder is streaming; now ask what to share.
 		go func() {
 			if hooks.status != nil {
