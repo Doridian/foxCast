@@ -54,7 +54,7 @@ func startTestIngest(t *testing.T) (*ScreenCapture, *IngestDisplay) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	cfg := CaptureConfig{FPS: 30, HWAccel: "openh264", VideoCodec: VideoCodecH264, PlaceholderText: "Waiting for a stream"}
+	cfg := CaptureConfig{FPS: 30, HWAccel: "openh264", VideoCodec: VideoCodecH264, Placeholder: PlaceholderWaitingForStream}
 	base, err := PrepareIngestCapture(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)

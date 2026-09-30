@@ -47,11 +47,10 @@ func cmdRTMP(ctx context.Context, args []string) error {
 	}
 	defer ln.Close()
 	mo.ingest = ln
-	mo.ingestURL = "rtmp://" + ln.Addr().String() + "/live"
 	// Stream audio plays into this receiver's own output device, which is
 	// left alone as the desktop's default.
 	mo.audioSource, mo.keepDefaultSink = audioSourceSink, true
-	log.Printf("publish to %s (any stream key) once the receiver shows the placeholder", mo.ingestURL)
+	log.Printf("publish to %s (any stream key) once the receiver shows the placeholder", "rtmp://"+ln.Addr().String()+"/live")
 	defer opts.openPTP()()
 	return runMirror(ctx, &opts, &mo, mirrorHooks{})
 }

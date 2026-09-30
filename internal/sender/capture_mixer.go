@@ -2,6 +2,7 @@ package sender
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log"
@@ -27,9 +28,38 @@ const (
 	fadeDuration   = 500 * time.Millisecond
 	firstFrameWait = 5 * time.Second
 
-	placeholderText       = "Choosing what to share…"
 	placeholderBackground = "0xff1c1c1e"
 )
+
+// Placeholder is the image a session shows before a source is on screen.
+type Placeholder int
+
+const (
+	PlaceholderChoosing         Placeholder = iota // "choosing what to share", the default
+	PlaceholderWaitingForStream                    // an RTMP ingest waiting for a publisher
+)
+
+// Placeholder images, 1920x1080 PNG, fitted to the canvas.
+var (
+	//go:embed placeholders/choosing.png
+	placeholderChoosingPNG []byte
+	//go:embed placeholders/waiting.png
+	placeholderWaitingPNG []byte
+)
+
+func (p Placeholder) String() string {
+	if p == PlaceholderWaitingForStream {
+		return "waiting for a stream"
+	}
+	return "choosing what to share"
+}
+
+func (p Placeholder) png() []byte {
+	if p == PlaceholderWaitingForStream {
+		return placeholderWaitingPNG
+	}
+	return placeholderChoosingPNG
+}
 
 // videoMixer is the running session pipeline.
 type videoMixer struct {
@@ -99,11 +129,12 @@ func startMixerCapture(ctx context.Context, cfg CaptureConfig, encoder encoderRe
 		m.close()
 	}()
 
-	text := cfg.PlaceholderText
-	if text == "" {
-		text = placeholderText
+	desc, files, err := placeholderBin(cfg.Placeholder, width, height, fps)
+	if err != nil {
+		capture.Stop()
+		return nil, fmt.Errorf("show placeholder: %w", err)
 	}
-	placeholder, err := m.add(placeholderBin(width, height, fps, text, hasGstElement("textoverlay")))
+	placeholder, err := m.add(desc, files...)
 	if err != nil {
 		capture.Stop()
 		return nil, fmt.Errorf("show placeholder: %w", err)
@@ -116,25 +147,39 @@ func startMixerCapture(ctx context.Context, cfg CaptureConfig, encoder encoderRe
 			log.Printf("[CAPTURE] warning: placeholder: %v", err)
 		}
 	}()
-	log.Printf("[CAPTURE] showing the %q placeholder at %dx%d", text, width, height)
+	log.Printf("[CAPTURE] showing the %q placeholder at %dx%d", cfg.Placeholder, width, height)
 	return capture, nil
 }
 
-// placeholderBin draws the placeholder card, with text when textoverlay is
-// available.
-func placeholderBin(width, height, fps int, text string, overlay bool) string {
-	stages := []gstStage{
-		{"videotestsrc", "is-live=true", "pattern=solid-color", "foreground-color=" + placeholderBackground},
-		{"capsfilter", fmt.Sprintf("caps=video/x-raw,width=%d,height=%d,framerate=%d/1", width, height, fps)},
+// placeholderBin shows placeholder's image, fitted to the canvas. The bin
+// reads the PNG from a pipe; the returned file is its reading end. Without
+// pngdec or imagefreeze it falls back to a plain card.
+func placeholderBin(placeholder Placeholder, width, height, fps int) (string, []*os.File, error) {
+	caps := gstStage{"capsfilter", fmt.Sprintf("caps=video/x-raw,width=%d,height=%d,pixel-aspect-ratio=1/1,framerate=%d/1", width, height, fps)}
+	if !hasGstElement("pngdec") || !hasGstElement("imagefreeze") {
+		return gstDescription([]gstStage{
+			{"videotestsrc", "is-live=true", "pattern=solid-color", "foreground-color=" + placeholderBackground},
+			caps,
+		}), nil, nil
 	}
-	if overlay {
-		stages = append(stages, gstStage{
-			"textoverlay", "text=" + text,
-			fmt.Sprintf("font-desc=Sans %d", max(8, height/30)),
-			"valignment=center", "halignment=center", "shaded-background=false",
-		})
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", nil, err
 	}
-	return gstDescription(stages)
+	image := placeholder.png()
+	go func() {
+		// fdsrc reads to EOF; a bin removed early closes r, failing the write.
+		_, _ = w.Write(image)
+		_ = w.Close()
+	}()
+	return gstDescription([]gstStage{
+		{"fdsrc", fmt.Sprintf("fd=%d", r.Fd())},
+		{"pngdec"},
+		{"imagefreeze", "is-live=true"},
+		{"videoconvert"},
+		{"videoscale", "add-borders=true"},
+		caps,
+	}), []*os.File{r}, nil
 }
 
 // pipeWireBin reads PipeWire node nodeID through fd and fits it to the canvas.

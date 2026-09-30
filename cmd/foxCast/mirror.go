@@ -43,9 +43,8 @@ type mirrorOptions struct {
 	xid uint64
 
 	// ingest, when set, replaces screen capture with streams published to
-	// this RTMP listener (see rtmp.go); ingestURL is shown while none plays.
-	ingest    net.Listener
-	ingestURL string
+	// this RTMP listener (see rtmp.go).
+	ingest net.Listener
 }
 
 func (m *mirrorOptions) register(flags *flag.FlagSet) {
@@ -181,7 +180,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 	}
 	var preparation *sender.CapturePreparation
 	if mo.ingest != nil {
-		captureCfg.PlaceholderText = "Waiting for a stream at " + mo.ingestURL
+		captureCfg.Placeholder = sender.PlaceholderWaitingForStream
 		preparation, err = sender.PrepareIngestCapture(ctx, captureCfg)
 	} else if mo.testMode {
 		log.Println("using synthetic test source")

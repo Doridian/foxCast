@@ -42,9 +42,9 @@ type CaptureConfig struct {
 	// CaptureSwitcher asks for the real source once the receiver shows it.
 	DeferSource bool
 
-	// PlaceholderText replaces the placeholder's "choosing what to share"
-	// wording, such as for an RTMP ingest waiting for a publisher.
-	PlaceholderText string
+	// Placeholder picks the image shown before a source is on screen, such
+	// as for an RTMP ingest waiting for a publisher.
+	Placeholder Placeholder
 
 	// RestoreToken and SaveRestoreToken let the Wayland portal skip its source
 	// picker by reusing an earlier choice. With SaveRestoreToken nil the portal
@@ -284,7 +284,7 @@ func PrepareTestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePrepara
 }
 
 // PrepareIngestCapture prepares a session compositor that needs no display:
-// it shows cfg.PlaceholderText until an IngestDisplay puts a stream on it.
+// it shows cfg.Placeholder until an IngestDisplay puts a stream on it.
 func PrepareIngestCapture(ctx context.Context, cfg CaptureConfig) (*CapturePreparation, error) {
 	for _, element := range ingestElements {
 		if !hasGstElement(element) {
