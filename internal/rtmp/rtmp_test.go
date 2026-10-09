@@ -20,7 +20,6 @@ type testClient struct {
 	conn      net.Conn
 	r         *bufio.Reader
 	chunkSize int
-	peer      *Publisher // the server side, only for reading its chunk size
 	inChunk   uint32
 	inStreams map[uint32]*chunkStream
 }

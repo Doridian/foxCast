@@ -219,7 +219,7 @@ func companionConnect(ctx context.Context, o *connectOptions, store *sender.Cred
 	}
 	if err := client.Verify(ctx, creds); err != nil {
 		_ = client.Close()
-		return nil, nil, fmt.Errorf("Companion pair-verify after pairing: %w", err)
+		return nil, nil, fmt.Errorf("companion pair-verify after pairing: %w", err)
 	}
 	return client, creds, nil
 }
@@ -232,7 +232,7 @@ func companionPair(ctx context.Context, o *connectOptions, addr, receiver, passw
 		creds, err := companionPairWith(ctx, addr, func() (string, error) { return password, nil })
 		if !errors.Is(err, sender.ErrPairingAuthentication) {
 			if err != nil {
-				return nil, fmt.Errorf("Companion pairing: %w", err)
+				return nil, fmt.Errorf("companion pairing: %w", err)
 			}
 			return creds, nil
 		}
@@ -242,10 +242,10 @@ func companionPair(ctx context.Context, o *connectOptions, addr, receiver, passw
 		return o.askCredential(ctx, receiver, credentialPINOrPassword, "PIN or password")
 	})
 	if errors.Is(err, sender.ErrPairingAuthentication) {
-		return nil, errors.New("Companion pairing: the Apple TV rejected the PIN or password")
+		return nil, errors.New("companion pairing: the Apple TV rejected the PIN or password")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("Companion pairing: %w", err)
+		return nil, fmt.Errorf("companion pairing: %w", err)
 	}
 	return creds, nil
 }

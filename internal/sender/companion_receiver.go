@@ -115,7 +115,7 @@ func (r *CompanionReceiver) Serve(ctx context.Context) error {
 				r.mu.Unlock()
 				conn.Close()
 			}()
-			if err := r.serveConn(conn); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			if err := r.serveConn(conn); !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				r.logf("connection %s failed: %v", conn.RemoteAddr(), err)
 			}
 		}()
