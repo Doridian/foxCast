@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/aead/chacha20poly1305 v0.0.0-20201124145622-1a5aba2a8b29
-	github.com/godbus/dbus/v5 v5.2.3
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/mappu/miqt v0.15.0
 	github.com/zalando/go-keyring v0.2.8
