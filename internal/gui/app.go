@@ -35,6 +35,7 @@ const (
 	iconSwitch  = "window-duplicate"
 	iconFile    = "document-open"
 	iconURL     = "insert-link"
+	iconHandoff = "computer"
 	iconStop    = "media-playback-stop"
 	iconRefresh = "view-refresh"
 	iconAdd     = "list-add"
@@ -355,6 +356,28 @@ func (a *app) playURL(r Receiver) {
 	if location, ok := a.askMedia(r); ok {
 		a.start(r, sessionPlay, location)
 	}
+}
+
+// handoff continues what r is playing in the browser.
+func (a *app) handoff(r Receiver) {
+	prompt := func(ctx context.Context, receiver string, kind CredentialKind) (string, error) {
+		return a.prompt(ctx, receiver, kind)
+	}
+	a.running.Add(1)
+	go func() {
+		defer a.running.Done()
+		title, err := a.backend.Handoff(a.ctx, &r, prompt)
+		mainthread.Start(func() {
+			a.refreshPaired()
+			switch {
+			case err != nil && a.ctx.Err() == nil && !errors.Is(err, ErrCancelled):
+				log.Printf("%s: %v", r.Name, err)
+				a.notify(iconError, "Could not continue "+r.Name+" here", errorText(err))
+			case err == nil:
+				a.notify(iconHandoff, "Continued from "+r.Name, title+" is open in your browser; "+r.Name+" is paused.")
+			}
+		})
+	}()
 }
 
 func (a *app) stop(r Receiver) {

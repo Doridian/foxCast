@@ -153,6 +153,16 @@ func (b *guiBackend) Play(ctx context.Context, r *gui.Receiver, location string,
 	})
 }
 
+// Handoff continues what r is playing in the local browser.
+func (b *guiBackend) Handoff(ctx context.Context, r *gui.Receiver, prompt gui.Prompter) (string, error) {
+	opts := b.connectOptions(r, prompt, gui.Callbacks{Status: func(string) {}})
+	res, err := handoff(ctx, opts, true)
+	if err != nil {
+		return "", err
+	}
+	return res.Title, openBrowser(res.URL)
+}
+
 // ClockStats reports the PTP listener's view of r. r.IP is the address the
 // session connected to; a manually added host name is looked up again.
 func (b *guiBackend) ClockStats(r *gui.Receiver) (gui.ClockStats, bool) {

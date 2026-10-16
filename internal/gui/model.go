@@ -81,6 +81,12 @@ func (r *Receiver) CanPlay() bool {
 	return r.Manual || r.SupportsVideo()
 }
 
+// CanHandoff reports whether the receiver may be playing a video that can be
+// continued on this computer: Apple TVs (and receivers of unknown model).
+func (r *Receiver) CanHandoff() bool {
+	return r.Manual || strings.HasPrefix(r.Model, "AppleTV")
+}
+
 // CanStreamAudio reports whether the receiver can be used as a speaker for
 // the computer's sound.
 func (r *Receiver) CanStreamAudio() bool {
@@ -151,6 +157,9 @@ type Backend interface {
 	// StreamAudio sends the computer's sound, and no video, to r.
 	StreamAudio(ctx context.Context, r *Receiver, prompt Prompter, cb Callbacks) error
 	Play(ctx context.Context, r *Receiver, location string, prompt Prompter, cb Callbacks) error
+	// Handoff pauses what r is playing and opens it, at the same position,
+	// in the local browser. It returns the title of what was opened.
+	Handoff(ctx context.Context, r *Receiver, prompt Prompter) (title string, err error)
 	// ClockStats reports on the PTP clock of r's running session; ok is false
 	// when the session is not timed with PTP (or not yet).
 	ClockStats(r *Receiver) (stats ClockStats, ok bool)

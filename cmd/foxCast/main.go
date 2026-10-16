@@ -33,6 +33,10 @@ func main() {
 		err = cmdRTMP(ctx, args)
 	case "group":
 		err = cmdGroup(ctx, args)
+	case "handoff":
+		err = cmdHandoff(ctx, args)
+	case "nowplaying":
+		err = cmdNowPlaying(ctx, args)
 	case "probe":
 		err = cmdProbe(ctx, args)
 	case "serve":
@@ -60,6 +64,8 @@ Usage:
   foxCast discover                     Scan for AirPlay receivers
   foxCast pair   [flags]               Pair with a receiver (saves credentials)
   foxCast play   [flags] <url|file>    Play a URL or local file on a receiver
+  foxCast handoff [flags]              Continue the receiver's YouTube video in a local browser, pausing it
+  foxCast nowplaying [flags]           Show what a receiver is playing
   foxCast mirror [flags]               Mirror the screen to a receiver, or audio to a speaker
   foxCast rtmp   [flags]               Show what OBS or another local client streams over RTMP
   foxCast group  [flags] <receiver>... Play audio on several receivers in step (stereo pair, surround)

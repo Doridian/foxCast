@@ -524,6 +524,10 @@ func receiverActions(a *app, r Receiver) []rowAction {
 			rowAction{icon: iconURL, label: "Play URL…", short: "Play URL…",
 				tip: "Play a web address or app link on " + r.Name, run: func() { a.playURL(r) }})
 	}
+	if r.CanHandoff() {
+		actions = append(actions, rowAction{icon: iconHandoff, label: "Continue on This Computer", short: "Continue here",
+			tip: "Pause the video playing on " + r.Name + " and continue it in the browser", run: func() { a.handoff(r) }})
+	}
 	if r.CanStreamAudio() {
 		actions = append(actions, rowAction{icon: iconSpeaker, label: "Play Sound", short: "Play Sound",
 			tip: "Play this computer's sound, without video, on " + r.Name, run: func() { a.streamAudio(r) }})

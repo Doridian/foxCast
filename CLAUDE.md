@@ -11,7 +11,7 @@
 
 ```
 cmd/foxCast/                 CLI: discover, pair, play (URL/file, or app link), probe, serve, mirror,
-                             rtmp, group, gui
+                             rtmp, group, gui, nowplaying, handoff
 cmd/foxCast-test-receiver/   hardware-free AirPlay receiver for manual testing
 internal/
   sender/                    AirPlay sender core: discovery, HAP/legacy pairing,
@@ -21,12 +21,14 @@ internal/
                              GStreamer capture (in-process pipelines, gst_command.go;
                              Wayland session compositor with fades, capture_mixer.go;
                              RTMP ingest onto that compositor, ingest.go),
-                             in-process test receiver, Companion protocol client
+                             in-process test receiver, MediaRemote now-playing/pause over
+                             the AirPlay data stream (remote_mrp.go), Companion protocol client
                              (Apple TV app launching, companion.go) and test service
   gst/                       thin CGo binding to GStreamer: parse-launch pipelines, bus,
                              properties, adding/removing bins while playing
   opack/                     Apple's OPACK serialization (Companion messages)
   applink/                   web URL → Apple TV app deep link (YouTube, …)
+  ytsearch/                  now-playing title/channel/duration → YouTube video ID (search page), for `handoff`
   rtmp/                      minimal RTMP ingest server (publish only) producing FLV, for `rtmp`
   fileserver/                local HTTP server for `play <file>` (file or transmux handler)
   mediasource/               random/streaming access to a local path or HTTP(S) Range URL
