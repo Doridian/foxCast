@@ -205,7 +205,7 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 
 	var capture *sender.ScreenCapture
 	var broadcast *sender.BroadcastCapture
-	var broadcastDone chan error
+	var broadcastDone chan struct{}
 	startedWidth, startedHeight := -1, -1
 	startedCodec := sender.VideoCodec("")
 	var liveVideoLead time.Duration
@@ -232,10 +232,15 @@ func runMirror(ctx context.Context, opts *connectOptions, mo *mirrorOptions, hoo
 			log.Printf("production HEVC timing requires at least %v video lead", liveVideoLead)
 		}
 		active := sender.NewBroadcastCaptureWithFrameRate(started, mo.fps)
-		done := make(chan error, 1)
+		done := make(chan struct{})
 		capture, broadcast, broadcastDone = started, active, done
 		startedWidth, startedHeight, startedCodec = width, height, codec
-		go func() { done <- active.Run() }()
+		go func() {
+			defer close(done)
+			// Run's error also ends the broadcast's sinks, so the session
+			// reports it from StreamFrames.
+			_ = active.Run()
+		}()
 		log.Printf("screen capture started at %dx%d using %s", width, height, codec)
 		return sender.VideoPreparationResult{MinimumVideoLead: liveVideoLead}, nil
 	}

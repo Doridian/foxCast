@@ -148,10 +148,23 @@ AAD   = the 128-byte packet header
 ### Sender-side video capture (Wayland)
 
 foxCast asks xdg-desktop-portal's ScreenCast interface for one source.
-`SelectSources` requests `types = MONITOR (1) | WINDOW (2)`, masked by the
-portal's `AvailableSourceTypes`, so the picker offers individual windows as
-well as whole screens. With `types = 1` alone, KDE's portal shows only the
-monitor list.
+`SelectSources` requests `types = MONITOR (1) | WINDOW (2) | VIRTUAL (4)`,
+masked by the portal's `AvailableSourceTypes`, so the picker offers
+individual windows and a new virtual screen as well as whole screens. With
+`types = 1` alone, KDE's portal shows only the monitor list.
+
+A virtual source extends the desktop onto the receiver instead of mirroring
+it. The compositor creates a new output for the portal session and removes it
+when the session closes, which happens when mirroring stops or "Change…"
+picks something else. Both KDE (xdg-desktop-portal-kde `src/screencast.cpp`)
+and GNOME (xdg-desktop-portal-gnome `src/screencast.c`) hand the whole type
+mask to their picker dialog. KDE's virtual screen entry has a resolution
+chooser (default 1920×1080). A mismatch with the receiver canvas is
+letterboxed like any other source. KDE's restore data keeps the virtual
+output and its `virtualSize`, so `-remember-source` brings the same virtual
+screen back without the dialog. GNOME sizes its virtual monitor from the
+consumer's PipeWire caps, which foxCast does not constrain (untested). Extending onto a receiver through a KDE virtual screen is hardware-tested.
+xdg-desktop-portal-wlr does not advertise VIRTUAL.
 
 By default `persist_mode` is `0` (do not persist) and no restore token is
 sent, so the picker appears for every mirror session, as on macOS.

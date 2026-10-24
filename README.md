@@ -13,7 +13,7 @@ In the end, it should be easy to stream any type of content to an Apple TV or ot
 | Video URL playback (`play <url>`), incl. local files via built-in HTTP server (tvOS 26+ play-queue protocol) | ✅ hardware-tested (AppleTV11,1, tvOS 27) |
 | Opening YouTube (and other app) links in the Apple TV's own app (`play <youtube url>`, Companion protocol) | ✅ hardware-tested with YouTube links on an Apple TV; other apps only against the test receiver |
 | MKV playback: on-the-fly Matroska → HLS/fMP4 transmux (no re-encoding), local or HTTP(S) | ✅ hardware-tested (UHD HEVC HDR10 + AC-3 remux, AppleTV11,1) |
-| Screen mirroring (`mirror`, H.264/HEVC + audio, Wayland/X11) | ✅ against the test receiver; hardware-tested upstream in doubletake (AppleTV11,1/14,1, tvOS 27) |
+| Screen mirroring (`mirror`, H.264/HEVC + audio, Wayland/X11; on Wayland also a virtual screen to extend the desktop) | ✅ against the test receiver; hardware-tested upstream in doubletake (AppleTV11,1/14,1, tvOS 27) |
 | System tray app (`gui`, Qt 6; Plasma-style popup, native pairing dialogs) | ✅ against the test receiver |
 | Playback controls in the CLI (pause/seek) | API exists (`PlaybackSession.Rate/Scrub`), not yet exposed |
 | Audio-only streaming to AirPlay 2 speakers (`mirror -audio-only`, automatic for speakers) | ✅ against the test receiver; not yet hardware-tested |
@@ -46,7 +46,7 @@ Clicking it opens a popup against the panel, like Plasma's Networks applet: rece
 listed first, then paired ones, then the others. Click a receiver to mirror the screen, play a
 file (native file picker) or paste a URL, play the computer's sound on it (Play Sound — the only
 action for speakers), or to forget its pairing. While mirroring on Wayland, "Change…" picks
-another screen or window. Receivers that are not discovered can be added by address from the tray
+another screen or window (or a new virtual screen, extending the desktop). Receivers that are not discovered can be added by address from the tray
 menu. PIN and password prompts appear as dialogs. The `mirror` flags, `play`'s `-app`,
 `-http-port` and Matroska flags, and the credential flags work here too and apply to every
 session.
@@ -110,7 +110,9 @@ Omit `-target` to pick from discovered receivers. Pass a PIN/password with `$FOX
 
 On Wayland, mirroring connects first, shows "Choosing what to share…" on the receiver, and then
 the portal asks for a screen or window; `-remember-source` reuses the last
-choice for that receiver instead. On X11, `-x11-window-id` captures one window instead of the
+choice for that receiver instead. Where the desktop supports it (KDE Plasma 6, GNOME), the
+picker also offers a new virtual screen: the receiver then extends the desktop as an additional
+display, which goes away when mirroring stops. On X11, `-x11-window-id` captures one window instead of the
 screen. The receiver probes a local UDP timing port during SETUP; use `-port-range MIN-MAX` to
 pin the ports if a firewall is in the way.
 

@@ -84,6 +84,7 @@ var ErrPortalCancelled = errors.New("screen sharing was cancelled")
 const (
 	portalSourceMonitor uint32 = 1
 	portalSourceWindow  uint32 = 2
+	portalSourceVirtual uint32 = 4
 
 	portalResponseSuccess   uint32 = 0
 	portalResponseCancelled uint32 = 1
@@ -1604,8 +1605,8 @@ func requestScreencast(ctx context.Context, restoreToken string, persist, showCu
 		cursorMode = 2
 	}
 
-	// Offer both whole monitors and individual windows; the portal's picker
-	// shows only the monitor list when asked for monitors alone.
+	// Offer whole monitors, individual windows and a new virtual monitor; the
+	// portal's picker shows only the monitor list when asked for monitors alone.
 	selectOpts := map[string]dbus.Variant{
 		"handle_token": dbus.MakeVariant(baseToken + "_select"),
 		"types":        dbus.MakeVariant(screenCastSourceTypes(screenCastAvailableSourceTypes(portal))),
@@ -1831,11 +1832,13 @@ func screenCastAvailableSourceTypes(portal dbus.BusObject) uint32 {
 	return types
 }
 
-// screenCastSourceTypes selects the monitor and window sources the portal
-// supports. Monitor capture is always requested, so an unknown or
+// screenCastSourceTypes selects the monitor, window and virtual sources the
+// portal supports. A virtual source is a new monitor the compositor adds for
+// the session, which extends the desktop onto the receiver instead of
+// mirroring it. Monitor capture is always requested, so an unknown or
 // monitor-less advertisement falls back to the previous monitor-only request.
 func screenCastSourceTypes(available uint32) uint32 {
-	return portalSourceMonitor | available&portalSourceWindow
+	return portalSourceMonitor | available&(portalSourceWindow|portalSourceVirtual)
 }
 
 func screenCastPortalVersion(portal dbus.BusObject) uint32 {

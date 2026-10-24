@@ -388,8 +388,7 @@ func TestLoneSharedTimestampedSinkDoesNotBackpressureCapture(t *testing.T) {
 		// Avoid leaking the pump if a regression makes a shared sink wait like the
 		// direct single-target policy.
 		slow.Close()
-		<-runDone
-		t.Fatal("a lone shared sink backpressured the timestamped source")
+		t.Fatalf("a lone shared sink backpressured the timestamped source (run = %v)", <-runDone)
 	}
 	if n, err := slow.ReadVideoAccessUnit(); len(n.AnnexB) != 0 || !errors.Is(err, io.EOF) {
 		t.Fatalf("overflowed shared sink read = (%x, %v), want empty EOF", n.AnnexB, err)

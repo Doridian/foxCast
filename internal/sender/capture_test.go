@@ -844,7 +844,9 @@ func TestScreenCastSourceTypes(t *testing.T) {
 		{0, portalSourceMonitor},
 		{portalSourceMonitor, portalSourceMonitor},
 		{portalSourceMonitor | portalSourceWindow, portalSourceMonitor | portalSourceWindow},
-		{portalSourceMonitor | portalSourceWindow | 4, portalSourceMonitor | portalSourceWindow},
+		{portalSourceMonitor | portalSourceWindow | portalSourceVirtual, portalSourceMonitor | portalSourceWindow | portalSourceVirtual},
+		{portalSourceMonitor | portalSourceVirtual, portalSourceMonitor | portalSourceVirtual},
+		{8, portalSourceMonitor},
 	} {
 		if got := screenCastSourceTypes(tc.available); got != tc.want {
 			t.Errorf("screenCastSourceTypes(%d) = %d, want %d", tc.available, got, tc.want)
