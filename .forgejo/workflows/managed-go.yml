@@ -16,11 +16,13 @@ jobs:
         with:
           go-version-file: 'go.mod'
           check-latest: true
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       - name: golangci-lint
         uses: https://github.com/golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pre-installed in the runner image
+          install-mode: none
       - name: Go build
         run: go build ./...
       - name: Go test
